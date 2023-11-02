@@ -4,6 +4,6 @@ RUSTFLAGS="-Zlocation-detail=none" cargo +nightly build -Z build-std=std,panic_a
 ```
 and then
 ```
-upx --best --lzma target/aarch64-unknown-linux-gnu/release/flash-module
+upx --best --lzma target/aarch64-unknown-linux-gnu/release/go-flash-module
 ```
 Make sure it is compiled using glibc 2.31 or lower
