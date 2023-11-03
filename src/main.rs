@@ -15,12 +15,12 @@ struct FirmwareVersion {
 
 impl FirmwareVersion {
 	fn from_filename(name: String) -> Option<Self> {
-		let mut firware: [u8;7] = [0u8;7];
+		let mut firmware: [u8;7] = [0u8;7];
 		if let Some(no_extension) = name.split(".").next() {
 			let numbers = no_extension.split("-");
 
 			for (i, num) in numbers.enumerate() {
-				let part = firware.get_mut(i)?;
+				let part = firmware.get_mut(i)?;
 				if let Ok(file_part) = u8::from_str_radix(num, 10) {
 					*part = file_part;
 				} else {
@@ -29,7 +29,7 @@ impl FirmwareVersion {
 			}
 		}
 		Some(Self {
-			firmware: firware,
+			firmware,
 		})
 	}
 
@@ -71,6 +71,7 @@ fn err_n_restart_services(nodered: bool, simulink: bool) {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("go-simulink")
+			.spawn();
 	}
 	exit(-1);
 }
@@ -87,6 +88,7 @@ fn success(nodered: bool, simulink: bool) {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("go-simulink")
+			.spawn();
 	}
 	exit(0);
 }
@@ -236,6 +238,7 @@ fn main() {
 		_ = Command::new("systemctl")
 			.arg("stop")
 			.arg("go-simulink")
+			.spawn();
 	}
 
 	spidev.configure(
