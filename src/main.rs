@@ -28,16 +28,21 @@ const SLOT_PROMPT: &str = "Which slot to overwrite?";
 
 const USAGE: &str = 
 "Usage:
-go-flash-module <slot> <file> [force]
+go-modules <command> [subcommands]
 or
-go-flash-module
-<>: must be present
-[]: optional
+go-modules
+
+commands:
+scan							Scan the modules in the controller
+update <all/slot#>				In case of all, try to update all modules, in case of a slot number, try to update that slot specifically
+overwrite <slot> <firmware>		Overwrite the firmware in <slot> with <firmware>
 
 examples:
-go-flash-module 1 20-20-2-6-1-3-2.srec 1 //forced flash of outputmodule firmware to the module in slot 1
-go-flash-module 8 20-10-1-5-2-0-0.srec   //checked flash of inputmodule firmware to the module in slot 8
-go-flash-module                          //flash with the tui";
+go-modules										Use with the tui (recommended)
+go-modules scan									Scan all modules in the controller
+go-modules update all							Try to update all modules in the controller
+go-modules update 1								Try to update the module in slot 1
+go-modules overwrite 1 20-10-1-5-0-0-9.srec		Forcefully overwrite the module in slot 1 with 20-10-1-5-0-0-9.srec (can be used to downgrade modules)";
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 struct FirmwareVersion {

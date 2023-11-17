@@ -1,9 +1,9 @@
 [package]
-name = "go-flash-module"
+name = "go-modules"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/GOcontroll/flash-module"
+repository = "https://github.com/GOcontroll/go-modules"
 readme = "README.md"
 homepage = "https://gocontroll.com"
 publish = false
