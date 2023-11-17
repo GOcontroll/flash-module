@@ -1,8 +1,6 @@
-use core::panic;
 use std::{
 	fs::File,
 	fs,
-	io::Read,
 	env,
 	process::{Command, exit},
 	time::Duration,
@@ -113,11 +111,6 @@ impl Display for CommandArg {
 	}
 }
 
-enum UpdateType {
-	All,
-	One(Module),
-}
-
 enum UploadError {
 	FirmwareCorrupted(u8),
 	FirmwareUntouched(u8),
@@ -148,7 +141,6 @@ impl Module {
 		let mut spidev = match controller { //get the Interrupt GPIO and the spidev
 			ControllerTypes::ModulineIV => {
 				match slot {
-					0 => panic!("0 is not a valid module slot"),
 					1 => {
 						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
 					},
@@ -173,12 +165,11 @@ impl Module {
 					8 => {
 						Spidev::new(File::open("/dev/spidev0.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("The Moduline IV only has 8 slots"),
+					_ => panic!("For the Moduline IV, slot should be a value from 1-8 but it was {}",slot),
 				}
 			},
 			ControllerTypes::ModulineMini => {
 				match slot {
-					0 => panic!("0 is not a valid module slot"),
 					1 => {
 						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
 					},
@@ -191,19 +182,18 @@ impl Module {
 					4 => {
 						Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("The Moduline Mini only has 4 slots")
+					_ => panic!("For the Moduline Mini, slot should be a value from 1-4 but it was {}",slot),
 				}
 			},
 			ControllerTypes::ModulineDisplay => {
 				match slot {
-					0 => panic!("0 is not a valid module slot"),
 					1 => {
 						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
 					},
 					2 => {
 						Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("The Moduline Screen only has 2 slots"),
+					_ => panic!("For the Moduline Display, slot should be a value from 1-2 but it was {}",slot),
 				}
 			}
 		};
@@ -286,19 +276,16 @@ impl Module {
 		let mut tx_buf = [0u8;BOOTMESSAGE_LENGTH+1];
 		let mut rx_buf = [0u8;BOOTMESSAGE_LENGTH+1];
 
-		let mut firmware_file = match File::open(format!("/usr/module-firmware/{}",new_firmware.to_filename())) {
+		//open and read the firmware file
+		let firmware_content_string = match fs::read_to_string(format!("/usr/module-firmware/{}",new_firmware.to_filename())) {
 			Ok(file) => file,
-			Err(_) => return Err(UploadError::FirmwareUntouched(self.slot)),
+			Err(err) => {
+				eprintln!("Error: could not read {}\n{}",new_firmware.to_filename(),err);
+				return Err(UploadError::FirmwareUntouched(self.slot));
+			}
 		};
 
 		//upload
-		//open and read the firmware file
-		let mut firmware_content_string = String::with_capacity(firmware_file.metadata().unwrap().len() as usize + 10);
-		match firmware_file.read_to_string(&mut firmware_content_string) {
-			Ok(_) => (),
-			Err(_) => return Err(UploadError::FirmwareUntouched(self.slot)),
-		}
-
 		let lines: Vec<&str> = firmware_content_string.split("\n").collect();
 		let mut line_number: usize = 0;
 		#[allow(unused_assignments)]
@@ -310,7 +297,7 @@ impl Module {
 		let mut firmware_error_counter: u8 = 0;
 
 		if lines.len() <= 1 {
-			println!("error: Firmware file corrupt");
+			eprintln!("Error: firmware file corrupt");
 			return Err(UploadError::FirmwareUntouched(self.slot));
 		}
 		//wipe the old firmware and set the new software version no err_n_restart_services from this point on, errors lead to corrupt firmware.
@@ -326,16 +313,22 @@ impl Module {
 
 		match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
 			Ok(()) => (),
-			Err(_) => return Err(UploadError::FirmwareUntouched(self.slot)),
+			Err(err) => {
+				println!("Error: failed spi transfer {}",err);
+				return Err(UploadError::FirmwareUntouched(self.slot))
+			},
 		}
 
-		println!("wiping old firmware...");
+		let spinner = multi_progress.add(ProgressBar::new_spinner());
+		spinner.set_message(format!("Wiping old firmware on slot {}",self.slot));
+		spinner.enable_steady_tick(Duration::from_millis(100));
 
 		thread::sleep(Duration::from_millis(2500));
+		spinner.finish_and_clear();
 
 		let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
 		progress.set_style(style);
-		progress.set_message(format!("Uploading firmware to slot {}", self.slot));
+		progress.set_message(format!("Uploading firmware {} to slot {}",self.firmware.to_string(), self.slot));
 
 
 		while message_type != 7 {
@@ -422,7 +415,8 @@ impl Module {
 						firmware_error_counter += 1;
 
 						if firmware_error_counter > 10 {
-							progress.abandon_with_message("Upload Failed");
+							eprintln!("Error: upload Failed, module did not receive message correctly");
+							progress.finish_and_clear();
 							return Err(UploadError::FirmwareCorrupted(self.slot));
 						}
 					}
@@ -432,7 +426,8 @@ impl Module {
 					firmware_error_counter += 1;
 
 					if firmware_error_counter > 10 {
-						progress.abandon_with_message("Upload Failed");
+						eprintln!("Error: upload Failed, lines didn't match");
+						progress.finish_and_clear();
 						return Err(UploadError::FirmwareCorrupted(self.slot));
 					}
 				}
@@ -442,14 +437,13 @@ impl Module {
 				firmware_error_counter += 1;
 
 				if firmware_error_counter > 10 {
-					progress.abandon_with_message("Upload Failed");
+					eprintln!("Error: upload Failed, checksum was incorrect");
+					progress.finish_and_clear();
 					return Err(UploadError::FirmwareCorrupted(self.slot));
 				}
 			}
 		}
-
-		_ = progress.set_message("Upload finished");
-		_ = progress.finish();
+		progress.finish_and_clear();
 		self.cancel_firmware_upload(&mut tx_buf);
 		return Ok(());
 	}
@@ -514,14 +508,14 @@ fn err_n_restart_services(nodered: bool, simulink: bool) -> ! {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("nodered")
-			.spawn();
+			.status();
 	}
 
 	if simulink {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("go-simulink")
-			.spawn();
+			.status();
 	}
 	exit(-1);
 }
@@ -532,14 +526,14 @@ fn success(nodered: bool, simulink: bool) -> ! {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("nodered")
-			.spawn();
+			.status();
 	}
 
 	if simulink {
 		_ = Command::new("systemctl")
 			.arg("start")
 			.arg("go-simulink")
-			.spawn();
+			.status();
 	}
 	exit(0);
 }
@@ -654,6 +648,77 @@ fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> V
 	modules.into_iter().flatten().collect()
 }
 
+fn update_one_module(module: Module, available_firmwares: &Vec<FirmwareVersion>, multi_progress: MultiProgress, style: ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+    match module.update_module(available_firmwares, multi_progress, style) {
+		Ok(Ok(module)) => {
+			println!("Succesfully updated slot {} to {}", module.slot,module.firmware.to_string());
+			save_modules(vec![Some(module)], &controller);
+			success(nodered, simulink);
+		},
+		Err(err) => match err {
+			UploadError::FirmwareCorrupted(slot) => {
+				err_n_die(format!("Update failed, firmware is corrupted on slot {}", slot).as_str());
+			},
+			UploadError::FirmwareUntouched(slot) => {
+				println!("Update failed on slot {}", slot);
+				err_n_restart_services(nodered, simulink);
+			}
+		},
+		Ok(Err(module)) => {
+			println!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.to_string());
+			err_n_restart_services(nodered, simulink);
+		}
+	}
+}
+
+fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVersion>, multi_progress: &MultiProgress, style: &ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+    let mut upload_results = Vec::with_capacity(modules.len());
+    let mut new_modules = Vec::with_capacity(modules.len());
+    let mut firmware_corrupted = false;
+    thread::scope(|t|{
+		let mut threads = Vec::with_capacity(modules.len());
+		for module in modules {
+			threads.push(t.spawn(|| {
+				module.update_module(available_firmwares, multi_progress.clone(), style.clone())
+			}))
+		}
+		for thread in threads {
+			upload_results.push(thread.join().unwrap())
+		}
+	});
+    for result in upload_results {
+		match result {
+			Ok(Ok(module)) => { //module updated
+				new_modules.push(Some(module))
+			},
+			Err(err) => match err {
+				UploadError::FirmwareCorrupted(slot) => {
+					println!("Update failed, firmware is corrupted on slot {}",slot);
+					firmware_corrupted = true;
+				},
+				UploadError::FirmwareUntouched(slot) => {
+					println!("Update failed on slot {}", slot);
+				}
+			},
+			Ok(Err(_)) => (), //no new firmwares available
+		}
+	}
+    if new_modules.len() > 0 {
+		println!("Succesfully updated:");
+		for module in &new_modules {
+			println!("slot {} to {}", module.as_ref().unwrap().slot, module.as_ref().unwrap().firmware.to_string());
+		}
+	} else if !firmware_corrupted {
+		println!("No updates found for the modules in this controller.");
+	}
+    save_modules(new_modules, &controller);
+    if firmware_corrupted {
+		err_n_die("could not restart nodered and go-simulink services due to corrupted firmware.");	
+	}
+					
+    success(nodered, simulink);
+}
+
 fn main() {
 	//get the controller hardware
 	let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").expect("Your controller does not support this feature");
@@ -666,27 +731,6 @@ fn main() {
 		ControllerTypes::ModulineDisplay
 	} else {
 		panic!("{} does not exist",hardware_string);
-	};
-
-	//get all the firmwares
-	let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/").unwrap() // get the files in module-firmware
-	.map(|file| file.unwrap().file_name().to_str().unwrap().to_string()) //turn them into strings
-	.filter(|file_name| file_name.ends_with(".srec")) //keep only the srec files
-	.map(|firmware| FirmwareVersion::from_filename(firmware).unwrap())//turn them into FirmwareVersion Structs
-	.collect(); //collect them into a vector
-
-	let command = if let Some(arg) = env::args().nth(1) {
-		match arg.as_str() {
-			"scan" => CommandArg::Scan,
-			"update" => CommandArg::Update,
-			"overwrite" => CommandArg::Overwrite,
-			_ => {
-				eprintln!("Invalid command entered {}\n{}",arg, USAGE);
-				exit(-1);
-			}
-		}
-	} else {
-		Select::new("What do you want to do?", vec![CommandArg::Scan, CommandArg::Update, CommandArg::Overwrite]).prompt().unwrap()
 	};
 
 	//stop services potentially trying to use the module
@@ -717,10 +761,51 @@ fn main() {
 			.arg("go-simulink")
 			.status();
 	}
+
+	//start getting module information in a seperate thread while other init is happening
+	let modules_thread = thread::spawn(move || {
+		get_modules_and_save(&controller)
+	});
+
+	//get all the firmwares
+	let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/").unwrap() // get the files in module-firmware
+	.map(|file| file.unwrap().file_name().to_str().unwrap().to_string()) //turn them into strings
+	.filter(|file_name| file_name.ends_with(".srec")) //keep only the srec files
+	.map(|firmware| FirmwareVersion::from_filename(firmware).unwrap())//turn them into FirmwareVersion Structs
+	.collect(); //collect them into a vector
+
+	//create the base for the progress bar(s)
+	let multi_progress = MultiProgress::new();
+	let style = ProgressStyle::with_template(
+		"{bar:40.cyan/blue} {pos:>7}/{len:7} ({eta})",
+	)
+	.unwrap()
+	.progress_chars("##-")
+	.with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s",state.eta().as_secs_f64()).unwrap());
+
+	let command = if let Some(arg) = env::args().nth(1) {
+		match arg.as_str() {
+			"scan" => CommandArg::Scan,
+			"update" => CommandArg::Update,
+			"overwrite" => CommandArg::Overwrite,
+			_ => {
+				eprintln!("Invalid command entered {}\n{}",arg, USAGE);
+				err_n_restart_services(nodered, simulink);
+			}
+		}
+	} else {
+		match Select::new("What do you want to do?", vec![CommandArg::Scan, CommandArg::Update, CommandArg::Overwrite]).prompt() {
+			Ok(arg) => arg,
+			Err(_) => err_n_restart_services(nodered, simulink),
+		}
+	};
+
+	//get the modules from the previously started thread
+	let modules = modules_thread.join().unwrap();
 	
 	match command {
 		CommandArg::Scan => {
-			let modules = get_modules_and_save(&controller);
+			//scan and save has already been done before this option was even selected, print out the values and exit
 			println!("found modules:");
 			for module in &modules {
 				println!("slot {}: {}", module.slot, module.firmware.to_string());
@@ -730,20 +815,14 @@ fn main() {
 
 
 		CommandArg::Update => {
-			let multi_progress = MultiProgress::new();
-			let style = ProgressStyle::with_template(
-				"[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({eta})",
-			)
-			.unwrap()
-			.progress_chars("##-")
-			.with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s",state.eta().as_secs_f64()).unwrap());
 			//find the update type
-			let update = if let Some(arg) = env::args().nth(2) {
+			if let Some(arg) = env::args().nth(2) {
 				match arg.as_str() {
-					"all" => UpdateType::All,
+					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
 					_ => if let Ok(slot) = u8::from_str_radix(&arg, 10) {
 						if slot < controller as u8 || slot >= 1 {
-							UpdateType::One(Module::new(slot, &controller).expect(format!("Couldn't find a module in slot {}", slot).as_str()))
+							let module = Module::new(slot, &controller).expect(format!("Couldn't find a module in slot {}", slot).as_str());
+							update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink);
 						} else {
 							println!("{}", USAGE);
 							err_n_restart_services(nodered, simulink);
@@ -755,16 +834,15 @@ fn main() {
 				}
 			} else {
 				match Select::new("Update one module or all?", vec!["all", "one"]).prompt().unwrap() {
-					"all" => UpdateType::All,
+					"all" =>  update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
 					"one" => {
-						let modules = get_modules_and_save(&controller);
 						if modules.len() > 0 {
-							UpdateType::One(match Select::new("select a module to update", modules).with_page_size(8).prompt() {
-								Ok(module) => module,
+							match Select::new("select a module to update", modules).with_page_size(8).prompt() {
+								Ok(module) => update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink),
 								Err(_) => {
 									err_n_restart_services(nodered, simulink);
 								}
-							})
+							}
 						} else {
 							println!("No modules found in the controller.");
 							err_n_restart_services(nodered, simulink);
@@ -775,93 +853,10 @@ fn main() {
 					}
 				}
 			};
-			//execute the update type
-			match update {
-				UpdateType::All => {
-					let modules = get_modules_and_save(&controller);
-					let mut upload_results = Vec::with_capacity(modules.len());
-					let mut new_modules = Vec::with_capacity(modules.len());
-					let mut firmware_corrupted = false;
-					thread::scope(|t|{
-						let mut threads = Vec::with_capacity(modules.len());
-						for module in modules {
-							threads.push(t.spawn(|| {
-								module.update_module(&available_firmwares, multi_progress.clone(), style.clone())
-							}))
-						}
-						for thread in threads {
-							upload_results.push(thread.join().unwrap())
-						}
-					});
-					for result in upload_results {
-						match result {
-							Ok(Ok(module)) => { //module updated
-								new_modules.push(Some(module))
-							},
-							Err(err) => match err {
-								UploadError::FirmwareCorrupted(slot) => {
-									println!("Update failed, firmware is corrupted on slot {}",slot);
-									firmware_corrupted = true;
-								},
-								UploadError::FirmwareUntouched(slot) => {
-									println!("Update failed on slot {}", slot);
-								}
-							},
-							Ok(Err(_)) => (), //no new firmwares available
-						}
-					}
-					if new_modules.len() > 0 {
-						println!("Succesfully updated:");
-						for module in &new_modules {
-							println!("slot {} to {}", module.as_ref().unwrap().slot, module.as_ref().unwrap().firmware.to_string());
-						}
-					} else if !firmware_corrupted {
-						println!("No updates found for the modules in this controller.");
-					}
-					save_modules(new_modules, &controller);
-					if firmware_corrupted {
-						err_n_die("could not restart nodered and go-simulink services due to corrupted firmware.");	
-					}
-					
-					success(nodered, simulink); 
-				}
-				UpdateType::One(module) => {
-					match module.update_module(&available_firmwares, multi_progress, style) {
-						Ok(Ok(module)) => {
-							println!("Succesfully updated slot {} to {}", module.slot,module.firmware.to_string());
-							save_modules(vec![Some(module)], &controller);
-							success(nodered, simulink);
-						},
-						Err(err) => match err {
-							UploadError::FirmwareCorrupted(slot) => {
-								err_n_die(format!("Update failed, firmware is corrupted on slot {}", slot).as_str());
-							},
-							UploadError::FirmwareUntouched(slot) => {
-								println!("Update failed on slot {}", slot);
-								err_n_restart_services(nodered, simulink);
-							}
-						},
-						Ok(Err(module)) => {
-							println!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.to_string());
-							err_n_restart_services(nodered, simulink);
-						}
-					}
-				}
-				
-			}
 		},
 
 
 		CommandArg::Overwrite => {
-			//make the progress bar
-			let multi_progress = MultiProgress::new();
-			let style = ProgressStyle::with_template(
-				"[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} ({eta})", // display time spent a bar of 40 characters in cyan/blue colour display progress as a number and the eta
-			)
-			.unwrap()
-			.progress_chars("##-")
-			.with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s",state.eta().as_secs_f64()).unwrap());
-
 			let mut module = if let Some(arg) = env::args().nth(2) {
 				if let Ok(slot) = u8::from_str_radix(arg.as_str(), 10) {
 					if let Some(module) = Module::new(slot, &controller) {
@@ -875,7 +870,6 @@ fn main() {
 					err_n_restart_services(nodered, simulink);
 				}
 			} else {
-				let modules = get_modules_and_save(&controller);
 				if modules.len() > 0 {
 					Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap()
 				} else {
