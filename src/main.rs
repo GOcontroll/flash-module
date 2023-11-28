@@ -165,7 +165,10 @@ impl Module {
 					8 => {
 						Spidev::new(File::open("/dev/spidev0.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("For the Moduline IV, slot should be a value from 1-8 but it was {}",slot),
+					_ => {
+						eprintln!("For the Moduline IV, slot should be a value from 1-8 but it was {}",slot);
+						return None;
+					},
 				}
 			},
 			ControllerTypes::ModulineMini => {
@@ -182,7 +185,10 @@ impl Module {
 					4 => {
 						Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("For the Moduline Mini, slot should be a value from 1-4 but it was {}",slot),
+					_ => {
+						eprintln!("For the Moduline Mini, slot should be a value from 1-4 but it was {}",slot);
+						return None;
+					},
 				}
 			},
 			ControllerTypes::ModulineDisplay => {
@@ -193,7 +199,10 @@ impl Module {
 					2 => {
 						Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT))
 					},
-					_ => panic!("For the Moduline Display, slot should be a value from 1-2 but it was {}",slot),
+					_ => {
+						eprintln!("For the Moduline Display, slot should be a value from 1-2 but it was {}",slot);
+						return None;
+					},
 				}
 			}
 		};
@@ -268,7 +277,58 @@ impl Module {
 		}
 	}
 
-	/// overwrite the firmware on a module
+	/// Overwrite the firmware on a module \
+	/// 
+	/// Firmware uploading mechanism \
+	/// Because of the parallel spi communication, the feedback from the module is about the previous message that was sent. \
+	/// So, after the first message you receive junk, after the second message you receive info if the first message was sent correctly. \
+	/// Two ways to fix this: \
+	/// The old, send a line of firmware, then send a status request to check if it was uploaded correctly, try again if not, move on to the next line if it was. \
+	/// This requires at least two messages sent per line of firmware, theoretically doubling the time to upload one piece of firmware.
+	///
+	/// The new fast but but complex way, keep track of the line of which you will receive feedback while also keeping track of what you are currently sending, \
+	/// this gets complicated once errors start happening. The diagrams below will explain what happens in which situation: \
+	/// normal function: \
+	/// ``` text
+	/// | 0 /\  ||      | 1 /\  ||      | 2 /\  ||      | 3 /\  ||      | 4 /\  ||      | 5 /\  ||      | 6 /\  ||      | 7 /\  ||      | 8 /\  ||      |
+	/// |   ||  \/ignore|   ||  \/ 0    |   ||  \/ 1    |   ||  \/ 2    |   ||  \/ 3    |   ||  \/ 4    |   ||  \/ 5    |   ||  \/ 6    |   ||  \/ 7    |
+	/// | lineNum    0  | lineNum    1  | lineNum    2  | lineNum    3  | lineNum    4  | lineNum    5  | lineNum    6  | lineNum    7  | lineNum    8  |
+	/// | lineCheck MAX | lineCheck  0  | lineCheck  1  | lineCheck  2  | lineCheck  3  | lineCheck  4  | lineCheck  5  | lineCheck  6  | lineCheck  7  |
+	/// | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  |
+	/// ```
+	/// on error swap lineNum and lineCheck, on success after odd number of errors swap them and add one to lineNum \
+	/// repeated single/odd number of errors
+	/// ``` text
+	/// | 0 /\  ||      | 1 /\  ||      | 2 /\  ||      | 3 /\  ||      | 2 /\  ||      | 4 /\  ||      | 2 /\  ||      | 5 /\  ||      | 6 /\  ||      |
+	/// |   ||  \/ignore|   ||  \/ 0    |   ||  \/ 1    |   ||  \/ err  |   ||  \/ 3    |   ||  \/ err  |   ||  \/ 4    |   ||  \/ 2    |   ||  \/ 5    |
+	/// | lineNum    0  | lineNum    1  | lineNum    2  | lineNum    3  | lineNum    2  | lineNum    4  | lineNum    2  | lineNum    5  | lineNum    6  |
+	/// | lineCheck MAX | lineCheck  0  | lineCheck  1  | lineCheck  2  | lineCheck  3  | lineCheck  2  | lineCheck  4  | lineCheck  2  | lineCheck  5  |
+	/// | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 1  | errorCount 0  | errorCount 1  | errorCount 0  | errorCount 0  | errorCount 0  |
+	/// ```
+	/// repeated even number of errors
+	/// ``` text
+	/// | 0 /\  ||      | 1 /\  ||      | 2 /\  ||      | 3 /\  ||      | 2 /\  ||      | 3 /\  ||      | 4 /\  ||      | 5 /\  ||      | 6 /\  ||      |
+	/// |   ||  \/ignore|   ||  \/ 0    |   ||  \/ 1    |   ||  \/ err  |   ||  \/ err  |   ||  \/ 2    |   ||  \/ 3    |   ||  \/ 4    |   ||  \/ 5    |
+	/// | lineNum    0  | lineNum    1  | lineNum    2  | lineNum    3  | lineNum    2  | lineNum    3  | lineNum    4  | lineNum    5  | lineNum    6  |
+	/// | lineCheck MAX | lineCheck  0  | lineCheck  1  | lineCheck  2  | lineCheck  3  | lineCheck  2  | lineCheck  3  | lineCheck  4  | lineCheck  5  |
+	/// | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 1  | errorCount 2  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  |
+	/// ```
+	/// end of firmware
+	/// ``` text
+	/// | n-1 /\  ||    | test/\  ||    | n /\  ||      | test/\  ||                    |
+	/// |     ||  \/ n-2|     ||  \/ n-1|   ||  \/ n-1  |     ||  \/ firmware response  |
+	/// | lineNum    n-1| lineNum    n  | lineNum    n  | lineNum    n                  |
+	/// | lineCheck  n-2| lineCheck  n-1| lineCheck  n-1| lineCheck  n                  |
+	/// | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0                  |
+	/// ```
+	/// end of firmware with error
+	/// ``` text
+	/// | n-1 /\  ||    | test/\  ||    | n-1 /\  ||    | test/\  ||    | n /\  ||      | test/\  ||    | n /\  ||      | test/\  ||                    |
+	/// |     ||  \/ n-2|     ||  \/ err|     ||  \/junk|     ||  \/ n-1|   ||  \/ n-1  |     ||  \/ err|   ||  \/ junk |     ||  \/ firmware response  |
+	/// | lineNum    n-1| lineNum    n  | lineNum    n-1| lineNum    n  | lineNum    n  | lineNum    n  | lineNum    n  | lineNum    n                  |
+	/// | lineCheck  n-2| lineCheck  n-1| lineCheck  n  | lineCheck  n-1| lineCheck  n-1| lineCheck  n  | lineCheck  n  | lineCheck  n                  |
+	/// | errorCount 0  | errorCount 1  | errorCount 2  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0                  |
+	///```
 	fn overwrite_module(&mut self, new_firmware: &FirmwareVersion, multi_progress: MultiProgress, style: ProgressStyle) -> Result<(), UploadError> {
 		let mut tx_buf_escape = [0u8;BOOTMESSAGE_LENGTH_CHECK];
 		let mut rx_buf_escape = [0u8;BOOTMESSAGE_LENGTH_CHECK];
@@ -293,7 +353,7 @@ impl Module {
 		#[allow(unused_assignments)]
 		let mut message_pointer: usize = 0;
 		let mut message_type: u8 = 0;
-		let mut firmware_line_check: usize = 0;
+		let mut firmware_line_check: usize = usize::MAX; //set line check to usize::MAX for the first message so we know its the first message
 		let mut firmware_error_counter: u8 = 0;
 
 		if lines.len() <= 1 {
@@ -314,7 +374,7 @@ impl Module {
 		match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
 			Ok(()) => (),
 			Err(err) => {
-				println!("Error: failed spi transfer {}",err);
+				eprintln!("Error: failed spi transfer {}",err);
 				return Err(UploadError::FirmwareUntouched(self.slot))
 			},
 		}
@@ -323,7 +383,7 @@ impl Module {
 		spinner.set_message(format!("Wiping old firmware on slot {}",self.slot));
 		spinner.enable_steady_tick(Duration::from_millis(100));
 
-		thread::sleep(Duration::from_millis(2500));
+		thread::sleep(Duration::from_millis(2500)); // give the module time to wipe the old firmware
 		spinner.finish_and_clear();
 
 		let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
@@ -331,11 +391,14 @@ impl Module {
 		progress.set_message(format!("Uploading firmware {} to slot {}",self.firmware.to_string(), self.slot));
 
 
-		while message_type != 7 {
+		while message_type != 7 { // 7 marks the last line of the .srec file
 			message_type = u8::from_str_radix(lines[line_number].get(1..2).unwrap(), 16).unwrap();
 
 			let line_length = u8::from_str_radix(lines[line_number].get(2..4).unwrap(), 16).unwrap();
+
+			//first time the last line is reached, it is not allowed to send the last line, as it could cause the module to jump to the firmware, potentially leaving line n-1 with an error
 			if message_type == 7 && firmware_line_check != line_number {
+				//prepare dummy message to get feedback from the previous message
 				tx_buf[0] = 49;
 				tx_buf[1] = (BOOTMESSAGE_LENGTH-1) as u8;
 				tx_buf[2] = 49;
@@ -346,18 +409,24 @@ impl Module {
 						firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize &&
 						rx_buf[8] == 1 {
 							thread::sleep(Duration::from_millis(5));
+						} else {
+							firmware_error_counter += 1;
+							mem::swap(&mut line_number, &mut firmware_line_check);
+							message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
+							thread::sleep(Duration::from_millis(5));
+							continue;
 						}
 					},
 					Err(_) => {
 						firmware_error_counter += 1;
 						mem::swap(&mut line_number, &mut firmware_line_check);
-						message_type = 0;
+						message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
 						thread::sleep(Duration::from_millis(5));
 						continue;
 					},
 				}
 			}
-
+			// prepare firmware message
 			tx_buf[0] = 39;
 			tx_buf[1] = (BOOTMESSAGE_LENGTH - 1 ) as u8;
 			tx_buf[2] = 39;
@@ -380,34 +449,67 @@ impl Module {
 
 			tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
 
-			_=self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf));
-			thread::sleep(Duration::from_millis(1));
+			match self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf)) {
+				Ok(_) => {
+					thread::sleep(Duration::from_millis(1));
+					// the first message will always receive junk, ignore this junk and continue to line 1
+					if firmware_line_check == usize::MAX {
+						line_number +=1;
+						firmware_line_check = 0;
+						continue;
+					}
 
-			if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1){
-				if firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize {
-					if rx_buf[8] == 1 {
-						if firmware_error_counter & 0b1 > 0{
-							std::mem::swap(&mut line_number, &mut firmware_line_check);
-						} else {
-							firmware_line_check = line_number;
-						}
-
-						if message_type == 7 {
-							tx_buf_escape[0] = 49;
-							tx_buf_escape[1] = (BOOTMESSAGE_LENGTH-1) as u8;
-							tx_buf_escape[2] = 49;
-							tx_buf_escape[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf_escape, BOOTMESSAGE_LENGTH-1);
-							thread::sleep(Duration::from_millis(5));
-							_=self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf_escape, &mut rx_buf_escape));
-							if !(rx_buf_escape[rx_buf_escape[1] as usize] == calculate_checksum(&rx_buf_escape, rx_buf_escape[1] as usize) && rx_buf_escape[6] == 20) {
-								message_type = 0;
+					if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1){ // checksum correct?
+						if firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize { // does the firmware line in the message match the expected one?
+							if rx_buf[8] == 1 { // did the module receive the line correctly?
+								if firmware_error_counter & 0b1 > 0{ // if the error counter is uneven swap line number and the line being checked
+									std::mem::swap(&mut line_number, &mut firmware_line_check);
+								} else { // else set the check number to the line line number, line number will be incremented later if necessary
+									firmware_line_check = line_number;
+								}
+								// the last message needs to be handled differently as it will instantly jump to the firmware when this message is received correctly.
+								if message_type == 7 {
+									// prepare a dummy message to see if we get a response from the firmware or from the bootloader.
+									tx_buf_escape[0] = 49;
+									tx_buf_escape[1] = (BOOTMESSAGE_LENGTH-1) as u8;
+									tx_buf_escape[2] = 49;
+									tx_buf_escape[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf_escape, BOOTMESSAGE_LENGTH-1);
+									thread::sleep(Duration::from_millis(5));
+									_=self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf_escape, &mut rx_buf_escape));
+									if rx_buf_escape[rx_buf_escape[1] as usize] == calculate_checksum(&rx_buf_escape, rx_buf_escape[1] as usize) && rx_buf_escape[6] == 20 {
+										// received response from bootloader, finish the last line of the progress bar and let the while loop exit.
+										progress.inc(1);
+									} else {
+										// last message failed, set the message type to not 7 again so we don't exit the while loop and try again instead
+										message_type = 0;
+									}
+								} else {
+									// normal firmware message
+									line_number += 1;
+									firmware_error_counter = 0;
+									progress.inc(1);
+								}
 							} else {
-								progress.inc(1);
+								mem::swap(&mut line_number, &mut firmware_line_check);
+								message_type = 0;
+								firmware_error_counter += 1;
+
+								if firmware_error_counter > 10 {
+									eprintln!("Error: upload Failed, module did not receive message correctly");
+									progress.finish_and_clear();
+									return Err(UploadError::FirmwareCorrupted(self.slot));
+								}
 							}
 						} else {
-							line_number += 1;
-							firmware_error_counter = 0;
-							progress.inc(1);
+							mem::swap(&mut line_number, &mut firmware_line_check);
+							message_type = 0;
+							firmware_error_counter += 1;
+
+							if firmware_error_counter > 10 {
+								eprintln!("Error: upload Failed, lines didn't match");
+								progress.finish_and_clear();
+								return Err(UploadError::FirmwareCorrupted(self.slot));
+							}
 						}
 					} else {
 						mem::swap(&mut line_number, &mut firmware_line_check);
@@ -415,12 +517,13 @@ impl Module {
 						firmware_error_counter += 1;
 
 						if firmware_error_counter > 10 {
-							eprintln!("Error: upload Failed, module did not receive message correctly");
+							eprintln!("Error: upload Failed, checksum was incorrect");
 							progress.finish_and_clear();
 							return Err(UploadError::FirmwareCorrupted(self.slot));
 						}
 					}
-				} else {
+				},
+				Err(_) => {
 					mem::swap(&mut line_number, &mut firmware_line_check);
 					message_type = 0;
 					firmware_error_counter += 1;
@@ -431,16 +534,6 @@ impl Module {
 						return Err(UploadError::FirmwareCorrupted(self.slot));
 					}
 				}
-			} else {
-				mem::swap(&mut line_number, &mut firmware_line_check);
-				message_type = 0;
-				firmware_error_counter += 1;
-
-				if firmware_error_counter > 10 {
-					eprintln!("Error: upload Failed, checksum was incorrect");
-					progress.finish_and_clear();
-					return Err(UploadError::FirmwareCorrupted(self.slot));
-				}
 			}
 		}
 		progress.finish_and_clear();
@@ -448,27 +541,30 @@ impl Module {
 		return Ok(());
 	}
 
-	/// update a module, checking for new matching firmwares in the firmwares parameter
+	/// Update a module, checking for new matching firmwares in the firmwares parameter \
+	/// The outer Result<Result, UploadError> indicates whether there was an error in the upload process \
+	/// The inner Result<Module,Module> indicates whether there was an available update or not.
 	fn update_module(mut self, firmwares: &Vec<FirmwareVersion>, multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Module, Module>, UploadError> {
 		if let Some((index,_junk)) = firmwares.iter().enumerate()
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
 			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == &[255u8,255,255]) && available.get_software() != &[255u8,255,255])//filter out wrong software versions
 			.map(|(i,available)| (i,available.get_software()))//turn them all into software versions
-			.min(){ //get the highest firmware version for some reason min gives that instead of max?
-				println!("updating slot {} from {} to {}", self.slot, self.firmware.to_string(), firmwares.get(index).unwrap().to_string());
-				match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style) {
-					Ok(()) => {
-						self.firmware = firmwares.get(index).unwrap().clone();
-						return Ok(Ok(self))}
-					,
-					Err(err) => return Err(err),
-				}
-		} else {
+			.min() //get the highest firmware version for some reason min gives that instead of max?
+		{
+			println!("updating slot {} from {} to {}", self.slot, self.firmware.to_string(), firmwares.get(index).unwrap().to_string());
+			match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style) {
+				Ok(()) => {
+					self.firmware = firmwares.get(index).unwrap().clone();
+					return Ok(Ok(self))} //firmware updated successfully
+				,
+				Err(err) => return Err(err), //error uploading the new firmware
+			}
+		} else { // no new firmware found to update the module with.
 			Ok(Err(self))
 		}
 	}
 
-	/// cancel the firmware upload of the module bringing the module into operational state
+	/// Cancel the firmware upload of the module bringing the module into operational state
 	fn cancel_firmware_upload(&mut self, tx_buf: &mut [u8]) {
 		tx_buf[0] = 19;
 		tx_buf[1] = (BOOTMESSAGE_LENGTH-1) as u8;
@@ -540,7 +636,7 @@ fn success(nodered: bool, simulink: bool) -> ! {
 
 /// error out without restarting any services
 fn err_n_die(message: &str) -> ! {
-	println!("{}",message);
+	eprintln!("{}",message);
 	exit(-1);
 }
 
@@ -660,12 +756,12 @@ fn update_one_module(module: Module, available_firmwares: &Vec<FirmwareVersion>,
 				err_n_die(format!("Update failed, firmware is corrupted on slot {}", slot).as_str());
 			},
 			UploadError::FirmwareUntouched(slot) => {
-				println!("Update failed on slot {}", slot);
+				eprintln!("Update failed on slot {}", slot);
 				err_n_restart_services(nodered, simulink);
 			}
 		},
 		Ok(Err(module)) => {
-			println!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.to_string());
+			eprintln!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.to_string());
 			err_n_restart_services(nodered, simulink);
 		}
 	}
@@ -693,11 +789,11 @@ fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVe
 			},
 			Err(err) => match err {
 				UploadError::FirmwareCorrupted(slot) => {
-					println!("Update failed, firmware is corrupted on slot {}",slot);
+					eprintln!("Update failed, firmware is corrupted on slot {}",slot);
 					firmware_corrupted = true;
 				},
 				UploadError::FirmwareUntouched(slot) => {
-					println!("Update failed on slot {}", slot);
+					eprintln!("Update failed on slot {}", slot);
 				}
 			},
 			Ok(Err(_)) => (), //no new firmwares available
@@ -709,7 +805,7 @@ fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVe
 			println!("slot {} to {}", module.as_ref().unwrap().slot, module.as_ref().unwrap().firmware.to_string());
 		}
 	} else if !firmware_corrupted {
-		println!("No updates found for the modules in this controller.");
+		eprintln!("No updates found for the modules in this controller.");
 	}
     save_modules(new_modules, &controller);
     if firmware_corrupted {
@@ -721,7 +817,9 @@ fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVe
 
 fn main() {
 	//get the controller hardware
-	let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").expect("Your controller does not support this feature");
+	let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").unwrap_or_else(|_|{
+		err_n_die("Could not find a hardware description file, this feature is not supported by your hardware.");
+	});
 
 	let controller = if hardware_string.contains("Moduline IV") {
 		ControllerTypes::ModulineIV
@@ -730,7 +828,7 @@ fn main() {
 	} else if hardware_string.contains("Moduline Screen") {
 		ControllerTypes::ModulineDisplay
 	} else {
-		panic!("{} does not exist",hardware_string);
+		err_n_die(format!("{} does not exist. Can't proceed",hardware_string).as_str());
 	};
 
 	//stop services potentially trying to use the module
@@ -821,14 +919,17 @@ fn main() {
 					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
 					_ => if let Ok(slot) = u8::from_str_radix(&arg, 10) {
 						if slot < controller as u8 || slot >= 1 {
-							let module = Module::new(slot, &controller).expect(format!("Couldn't find a module in slot {}", slot).as_str());
+							let module = Module::new(slot, &controller).unwrap_or_else(||{
+								eprintln!("Couldn't find a module in slot {}", slot);
+								exit(-1);
+							});
 							update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink);
 						} else {
-							println!("{}", USAGE);
+							eprintln!("{}", USAGE);
 							err_n_restart_services(nodered, simulink);
 						}
 					} else {
-						println!("{}", USAGE);
+						eprintln!("{}", USAGE);
 						err_n_restart_services(nodered, simulink);
 					}
 				}
@@ -844,7 +945,7 @@ fn main() {
 								}
 							}
 						} else {
-							println!("No modules found in the controller.");
+							eprintln!("No modules found in the controller.");
 							err_n_restart_services(nodered, simulink);
 						}
 					}
@@ -862,18 +963,18 @@ fn main() {
 					if let Some(module) = Module::new(slot, &controller) {
 						module
 					} else {
-						println!("No module present in that slot");
+						eprintln!("No module present in that slot");
 						err_n_restart_services(nodered, simulink);
 					}
 				} else {
-					println!("Invalid slot entered\n{}", USAGE);
+					eprintln!("Invalid slot entered\n{}", USAGE);
 					err_n_restart_services(nodered, simulink);
 				}
 			} else {
 				if modules.len() > 0 {
 					Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap()
 				} else {
-					println!("No modules found in the controller.");
+					eprintln!("No modules found in the controller.");
 					err_n_restart_services(nodered, simulink);
 				}
 			};
@@ -883,11 +984,11 @@ fn main() {
 					if available_firmwares.contains(&firmware){
 						firmware
 					} else {
-						println!("/usr/module-firmware/{} does not exist",arg);
+						eprintln!("/usr/module-firmware/{} does not exist",arg);
 						err_n_restart_services(nodered, simulink);
 					}
 				} else {
-					println!("Invalid firmware entered\n{}", USAGE);
+					eprintln!("Invalid firmware entered\n{}", USAGE);
 					err_n_restart_services(nodered, simulink);
 				}
 			} else {
@@ -897,7 +998,7 @@ fn main() {
 				if valid_firmwares.len() > 0 {
 					Select::new("Which firmware to upload?", valid_firmwares).prompt().unwrap().clone()
 				} else {
-					println!("No firmware(s) found for this module.");
+					eprintln!("No firmware(s) found for this module.");
 					err_n_restart_services(nodered, simulink);
 				}
 			};
@@ -914,7 +1015,7 @@ fn main() {
 							err_n_die(format!("Update failed, firmware is corrupted on slot {}", slot).as_str());
 						},
 						UploadError::FirmwareUntouched(slot) => {
-							println!("Update failed on slot {}", slot);
+							eprintln!("Update failed on slot {}", slot);
 							err_n_restart_services(nodered, simulink);
 						}
 					}	
