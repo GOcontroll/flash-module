@@ -51,12 +51,12 @@ impl FirmwareVersion {
 	/// create a FirmwareVersion from a filename for example 20-10-1-5-0-0-9.srec
 	fn from_filename(name: String) -> Option<Self> {
 		let mut firmware: [u8;7] = [0u8;7];
-		if let Some(no_extension) = name.split(".").next() {
-			let numbers = no_extension.split("-");
+		if let Some(no_extension) = name.split('.').next() {
+			let numbers = no_extension.split('-');
 
 			for (i, num) in numbers.enumerate() {
 				let part = firmware.get_mut(i)?;
-				if let Ok(file_part) = u8::from_str_radix(num, 10) {
+				if let Ok(file_part) = num.parse::<u8>() {
 					*part = file_part;
 				} else {
 					return None;
@@ -79,19 +79,19 @@ impl FirmwareVersion {
 	}
 
 	/// get a string version of the firmware version like 20-10-1-5-0-0-9
-	fn to_string(&self) -> String {
+	fn as_string(&self) -> String {
 		format!("{}-{}-{}-{}-{}-{}-{}",self.firmware[0],self.firmware[1],self.firmware[2],self.firmware[3],self.firmware[4],self.firmware[5],self.firmware[6])
 	}
 
 	/// get a filename version of the firmware version like 20-10-1-5-0-0-9.srec
-	fn to_filename(&self) -> String {
-		format!("{}.srec",self.to_string())
+	fn as_filename(&self) -> String {
+		format!("{}.srec",self.as_string())
 	}
 }
 
 impl Display for FirmwareVersion {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f,"{}", self.to_filename())
+		write!(f,"{}", self.as_filename())
 	}
 }
 
@@ -253,9 +253,7 @@ impl Module {
 			},		
 		}
 	
-		if rx_buf[BOOTMESSAGE_LENGTH-1] != calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1) {
-			return None
-		} else if rx_buf[0] != 9 && rx_buf[2] != 9 {
+		if rx_buf[BOOTMESSAGE_LENGTH-1] != calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1) || (rx_buf[0] != 9 && rx_buf[2] != 9) {
 			return None
 		}
 	
@@ -337,16 +335,16 @@ impl Module {
 		let mut rx_buf = [0u8;BOOTMESSAGE_LENGTH+1];
 
 		//open and read the firmware file
-		let firmware_content_string = match fs::read_to_string(format!("/usr/module-firmware/{}",new_firmware.to_filename())) {
+		let firmware_content_string = match fs::read_to_string(format!("/usr/module-firmware/{}",new_firmware.as_filename())) {
 			Ok(file) => file,
 			Err(err) => {
-				eprintln!("Error: could not read {}\n{}",new_firmware.to_filename(),err);
+				eprintln!("Error: could not read {}\n{}",new_firmware.as_filename(),err);
 				return Err(UploadError::FirmwareUntouched(self.slot));
 			}
 		};
 
 		//upload
-		let lines: Vec<&str> = firmware_content_string.split("\n").collect();
+		let lines: Vec<&str> = firmware_content_string.split('\n').collect();
 		let mut line_number: usize = 0;
 		#[allow(unused_assignments)]
 		let mut send_buffer_pointer: usize = 0;
@@ -388,7 +386,7 @@ impl Module {
 
 		let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
 		progress.set_style(style);
-		progress.set_message(format!("Uploading firmware {} to slot {}",self.firmware.to_string(), self.slot));
+		progress.set_message(format!("Uploading firmware {} to slot {}",self.firmware.as_string(), self.slot));
 
 
 		while message_type != 7 { // 7 marks the last line of the .srec file
@@ -538,26 +536,26 @@ impl Module {
 		}
 		progress.finish_and_clear();
 		self.cancel_firmware_upload(&mut tx_buf);
-		return Ok(());
+		Ok(())
 	}
 
 	/// Update a module, checking for new matching firmwares in the firmwares parameter \
 	/// The outer Result<Result, UploadError> indicates whether there was an error in the upload process \
 	/// The inner Result<Module,Module> indicates whether there was an available update or not.
-	fn update_module(mut self, firmwares: &Vec<FirmwareVersion>, multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Module, Module>, UploadError> {
+	fn update_module(mut self, firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Module, Module>, UploadError> {
 		if let Some((index,_junk)) = firmwares.iter().enumerate()
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
-			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == &[255u8,255,255]) && available.get_software() != &[255u8,255,255])//filter out wrong software versions
+			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == [255u8,255,255]) && available.get_software() != [255u8,255,255])//filter out wrong software versions
 			.map(|(i,available)| (i,available.get_software()))//turn them all into software versions
 			.min() //get the highest firmware version for some reason min gives that instead of max?
 		{
-			println!("updating slot {} from {} to {}", self.slot, self.firmware.to_string(), firmwares.get(index).unwrap().to_string());
+			println!("updating slot {} from {} to {}", self.slot, self.firmware.as_string(), firmwares.get(index).unwrap().as_string());
 			match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style) {
 				Ok(()) => {
-					self.firmware = firmwares.get(index).unwrap().clone();
-					return Ok(Ok(self))} //firmware updated successfully
-				,
-				Err(err) => return Err(err), //error uploading the new firmware
+					self.firmware = *firmwares.get(index).unwrap();
+					Ok(Ok(self)) //firmware updated successfully
+				},
+				Err(err) => Err(err), //error uploading the new firmware
 			}
 		} else { // no new firmware found to update the module with.
 			Ok(Err(self))
@@ -569,8 +567,8 @@ impl Module {
 		tx_buf[0] = 19;
 		tx_buf[1] = (BOOTMESSAGE_LENGTH-1) as u8;
 		tx_buf[2] = 19;
-		tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
-		_=self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf));
+		tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(tx_buf, BOOTMESSAGE_LENGTH-1);
+		_=self.spidev.transfer(&mut SpidevTransfer::write(tx_buf));
 	}
 }
 
@@ -581,19 +579,19 @@ impl Display for Module {
 				1 => format!("slot {}: 6 Channel Input module",self.slot),
 				2 => format!("slot {}: 10 Channel Input module", self.slot),
 				3 => format!("slot {}: 4-20mA Input module", self.slot),
-				_ => format!("slot {}: unknown: {}",self.slot,self.firmware.to_string()),
+				_ => format!("slot {}: unknown: {}",self.slot,self.firmware.as_string()),
 			},
 			20 => match self.firmware.get_hardware().get(2).unwrap() {
 				1 => format!("slot {}: 2 Channel Output module", self.slot),
 				2 => format!("slot {}: 6 Channel Output module", self.slot),
 				3 => format!("slot {}: 10 Channel Output module", self.slot),
-				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.to_string()),
+				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 			},
 			30 => match self.firmware.get_hardware().get(2).unwrap() {
 				3 => format!("slot {}: ANLEG IR module", self.slot),
-				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.to_string()),
+				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 			},
-			_ => format!("slot {}: unknown: {}", self.slot, self.firmware.to_string()),
+			_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 		})
 	}
 }
@@ -665,7 +663,7 @@ fn get_modules(controller: &ControllerTypes) -> Vec<Module> {
 	let mut modules = Vec::with_capacity(8);
 	thread::scope(|t| {
 		let mut scan_threads = Vec::with_capacity(8);
-		let controller = controller.clone();
+		let controller = *controller;
 		for i in 1..controller as usize {
 			scan_threads.push(t.spawn(move || {
 				Module::new(i as u8, &controller)
@@ -693,7 +691,7 @@ fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
 		let slot = module.slot;
 		modules_out[(slot -1) as usize] = Some(module);
 	}
-	save_modules(modules_out,&controller)
+	save_modules(modules_out,controller)
 }
 
 /// save all the modules to modules to /usr/module-firmware/modules.txt, None elements will be removed from the file
@@ -716,15 +714,15 @@ fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> V
 :"),
 		}
 	};
-	let mut lines: Vec<String> = modules_string.split("\n").map(|element| element.to_owned()).collect();
-	let mut firmwares: Vec<String> = lines.get_mut(0).unwrap().split(":").map(|element| element.to_owned()).collect();
-	let mut manufactures: Vec<String> = lines.get_mut(1).unwrap().split(":").map(|element| element.to_owned()).collect();
-	let mut front_qrs: Vec<String> = lines.get_mut(2).unwrap().split(":").map(|element| element.to_owned()).collect();
-	let mut rear_qrs: Vec<String> = lines.get_mut(3).unwrap().split(":").map(|element| element.to_owned()).collect();
+	let mut lines: Vec<String> = modules_string.split('\n').map(|element| element.to_owned()).collect();
+	let mut firmwares: Vec<String> = lines.get_mut(0).unwrap().split(':').map(|element| element.to_owned()).collect();
+	let mut manufactures: Vec<String> = lines.get_mut(1).unwrap().split(':').map(|element| element.to_owned()).collect();
+	let mut front_qrs: Vec<String> = lines.get_mut(2).unwrap().split(':').map(|element| element.to_owned()).collect();
+	let mut rear_qrs: Vec<String> = lines.get_mut(3).unwrap().split(':').map(|element| element.to_owned()).collect();
 
 	for (i,module) in modules.iter().enumerate() {
 		if let Some(module) = module {
-			*firmwares.get_mut((module.slot-1) as usize).unwrap() = module.firmware.to_string();
+			*firmwares.get_mut((module.slot-1) as usize).unwrap() = module.firmware.as_string();
 			*manufactures.get_mut((module.slot-1) as usize).unwrap() = format!("{}", module.manufacturer);
 			*front_qrs.get_mut((module.slot-1) as usize).unwrap() = format!("{}",module.qr_front);
 			*rear_qrs.get_mut((module.slot-1) as usize).unwrap() = format!("{}",module.qr_back);
@@ -744,10 +742,10 @@ fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> V
 	modules.into_iter().flatten().collect()
 }
 
-fn update_one_module(module: Module, available_firmwares: &Vec<FirmwareVersion>, multi_progress: MultiProgress, style: ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+fn update_one_module(module: Module, available_firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
     match module.update_module(available_firmwares, multi_progress, style) {
 		Ok(Ok(module)) => {
-			println!("Succesfully updated slot {} to {}", module.slot,module.firmware.to_string());
+			println!("Succesfully updated slot {} to {}", module.slot,module.firmware.as_string());
 			save_modules(vec![Some(module)], &controller);
 			success(nodered, simulink);
 		},
@@ -761,13 +759,13 @@ fn update_one_module(module: Module, available_firmwares: &Vec<FirmwareVersion>,
 			}
 		},
 		Ok(Err(module)) => {
-			eprintln!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.to_string());
+			eprintln!("Update failed, no update available for slot {}: {}", module.slot, module.firmware.as_string());
 			err_n_restart_services(nodered, simulink);
 		}
 	}
 }
 
-fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVersion>, multi_progress: &MultiProgress, style: &ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+fn update_all_modules(modules: Vec<Module>, available_firmwares: &[FirmwareVersion], multi_progress: &MultiProgress, style: &ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
     let mut upload_results = Vec::with_capacity(modules.len());
     let mut new_modules = Vec::with_capacity(modules.len());
     let mut firmware_corrupted = false;
@@ -799,10 +797,10 @@ fn update_all_modules(modules: Vec<Module>, available_firmwares: &Vec<FirmwareVe
 			Ok(Err(_)) => (), //no new firmwares available
 		}
 	}
-    if new_modules.len() > 0 {
+    if !new_modules.is_empty() {
 		println!("Succesfully updated:");
 		for module in &new_modules {
-			println!("slot {} to {}", module.as_ref().unwrap().slot, module.as_ref().unwrap().firmware.to_string());
+			println!("slot {} to {}", module.as_ref().unwrap().slot, module.as_ref().unwrap().firmware.as_string());
 		}
 	} else if !firmware_corrupted {
 		eprintln!("No updates found for the modules in this controller.");
@@ -837,14 +835,14 @@ fn main() {
 		.arg("nodered")
 		.output().unwrap().stdout;
 
-	let nodered = !String::from_utf8_lossy(&output).to_owned().contains("in");
+	let nodered = !String::from_utf8_lossy(&output).into_owned().contains("in");
 
 	let output =Command::new("systemctl")
 		.arg("is-active")
 		.arg("go-simulink")
 		.output().unwrap().stdout;
 
-	let simulink = !String::from_utf8_lossy(&output).to_owned().contains("in");
+	let simulink = !String::from_utf8_lossy(&output).into_owned().contains("in");
 
 	if nodered {
 		_ = Command::new("systemctl")
@@ -906,7 +904,7 @@ fn main() {
 			//scan and save has already been done before this option was even selected, print out the values and exit
 			println!("found modules:");
 			for module in &modules {
-				println!("slot {}: {}", module.slot, module.firmware.to_string());
+				println!("slot {}: {}", module.slot, module.firmware.as_string());
 			}
 			success(nodered, simulink);
 		},
@@ -917,7 +915,7 @@ fn main() {
 			if let Some(arg) = env::args().nth(2) {
 				match arg.as_str() {
 					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
-					_ => if let Ok(slot) = u8::from_str_radix(&arg, 10) {
+					_ => if let Ok(slot) = arg.parse::<u8>() {
 						if slot < controller as u8 || slot >= 1 {
 							let module = Module::new(slot, &controller).unwrap_or_else(||{
 								eprintln!("Couldn't find a module in slot {}", slot);
@@ -937,7 +935,7 @@ fn main() {
 				match Select::new("Update one module or all?", vec!["all", "one"]).prompt().unwrap() {
 					"all" =>  update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
 					"one" => {
-						if modules.len() > 0 {
+						if !modules.is_empty() {
 							match Select::new("select a module to update", modules).with_page_size(8).prompt() {
 								Ok(module) => update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink),
 								Err(_) => {
@@ -959,7 +957,7 @@ fn main() {
 
 		CommandArg::Overwrite => {
 			let mut module = if let Some(arg) = env::args().nth(2) {
-				if let Ok(slot) = u8::from_str_radix(arg.as_str(), 10) {
+				if let Ok(slot) = arg.parse::<u8>() {
 					if let Some(module) = Module::new(slot, &controller) {
 						module
 					} else {
@@ -970,13 +968,11 @@ fn main() {
 					eprintln!("Invalid slot entered\n{}", USAGE);
 					err_n_restart_services(nodered, simulink);
 				}
+			} else if !modules.is_empty() {
+				Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap()
 			} else {
-				if modules.len() > 0 {
-					Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap()
-				} else {
-					eprintln!("No modules found in the controller.");
-					err_n_restart_services(nodered, simulink);
-				}
+				eprintln!("No modules found in the controller.");
+				err_n_restart_services(nodered, simulink);
 			};
 
 			let new_firmware = if let Some(arg) = env::args().nth(3) {
@@ -995,8 +991,8 @@ fn main() {
 				let valid_firmwares: Vec<&FirmwareVersion> = available_firmwares.iter()
 					.filter(|firmware| firmware.get_hardware() == module.firmware.get_hardware())
 					.collect();
-				if valid_firmwares.len() > 0 {
-					Select::new("Which firmware to upload?", valid_firmwares).prompt().unwrap().clone()
+				if !valid_firmwares.is_empty() {
+					*Select::new("Which firmware to upload?", valid_firmwares).prompt().unwrap()
 				} else {
 					eprintln!("No firmware(s) found for this module.");
 					err_n_restart_services(nodered, simulink);
@@ -1004,7 +1000,7 @@ fn main() {
 			};
 			match module.overwrite_module(&new_firmware, multi_progress, style) {
 				Ok(()) => {
-					println!("succesfully updated slot {} from {} to {}", module.slot, module.firmware.to_string(), new_firmware.to_string());
+					println!("succesfully updated slot {} from {} to {}", module.slot, module.firmware.as_string(), new_firmware.as_string());
 					module.firmware = new_firmware;
 					save_modules(vec![Some(module)], &controller);
 					success(nodered, simulink);
