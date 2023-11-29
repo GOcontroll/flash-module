@@ -124,6 +124,25 @@ enum ControllerTypes {
 	ModulineDisplay = 3,
 }
 
+impl ControllerTypes {
+	fn get_empty_modules_file(&self) -> String {
+    	match self {
+			ControllerTypes::ModulineIV => String::from(":::::::
+:::::::
+:::::::
+:::::::"),
+			ControllerTypes::ModulineMini => String::from(":::
+:::
+:::
+:::"),
+			ControllerTypes::ModulineDisplay => String::from(":
+:
+:
+:"),
+		}
+	}
+}
+
 #[derive(Debug)]
 struct Module {
 	slot: u8,
@@ -547,7 +566,8 @@ impl Module {
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
 			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == [255u8,255,255]) && available.get_software() != [255u8,255,255])//filter out wrong software versions
 			.map(|(i,available)| (i,available.get_software()))//turn them all into software versions
-			.min() //get the highest firmware version for some reason min gives that instead of max?
+			.inspect(|(_i,software)| println!("{:?}", software))
+			.reduce(|acc,(i, software)| if acc.1 < software { (i, software) } else { acc }) //cant use min/max because of the tuple, have to manually compare it in a reduce function
 		{
 			println!("updating slot {} from {} to {}", self.slot, self.firmware.as_string(), firmwares.get(index).unwrap().as_string());
 			match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style) {
@@ -697,22 +717,13 @@ fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
 /// save all the modules to modules to /usr/module-firmware/modules.txt, None elements will be removed from the file
 fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> Vec<Module> {
 	let modules_string = if let Ok(contents) = std::fs::read_to_string("/usr/module-firmware/modules.txt") {
-		contents
-	} else { //if the file doesn't exist, generate a new template
-		match controller {
-			ControllerTypes::ModulineIV => String::from(":::::::
-:::::::
-:::::::
-:::::::"),
-			ControllerTypes::ModulineMini => String::from(":::
-:::
-:::
-:::"),
-			ControllerTypes::ModulineDisplay => String::from(":
-:
-:
-:"),
+		if contents.split('\n').count() == 4 { // for some reason the file from older systems is messed up sometimes
+			contents
+		} else {
+			controller.get_empty_modules_file()
 		}
+	} else { //if the file doesn't exist, generate a new template
+		controller.get_empty_modules_file()
 	};
 	let mut lines: Vec<String> = modules_string.split('\n').map(|element| element.to_owned()).collect();
 	let mut firmwares: Vec<String> = lines.get_mut(0).unwrap().split(':').map(|element| element.to_owned()).collect();
@@ -890,21 +901,24 @@ fn main() {
 			}
 		}
 	} else {
-		match Select::new("What do you want to do?", vec![CommandArg::Scan, CommandArg::Update, CommandArg::Overwrite]).prompt() {
-			Ok(arg) => arg,
-			Err(_) => err_n_restart_services(nodered, simulink),
-		}
+		Select::new("What do you want to do?", vec![CommandArg::Scan, CommandArg::Update, CommandArg::Overwrite]).prompt().unwrap_or_else(|_| err_n_restart_services(nodered, simulink))
 	};
 
 	//get the modules from the previously started thread
-	let modules = modules_thread.join().unwrap();
-	
+	let modules =  match modules_thread.join() {
+		Ok(modules) => modules,
+		Err(err) => {
+			eprintln!("failed to get module info: {:?}", err);
+			err_n_restart_services(nodered, simulink);
+		}
+	};
+
 	match command {
 		CommandArg::Scan => {
 			//scan and save has already been done before this option was even selected, print out the values and exit
 			println!("found modules:");
 			for module in &modules {
-				println!("slot {}: {}", module.slot, module.firmware.as_string());
+				println!("{}", module);
 			}
 			success(nodered, simulink);
 		},
@@ -919,7 +933,7 @@ fn main() {
 						if slot < controller as u8 || slot >= 1 {
 							let module = Module::new(slot, &controller).unwrap_or_else(||{
 								eprintln!("Couldn't find a module in slot {}", slot);
-								exit(-1);
+								err_n_restart_services(nodered, simulink);
 							});
 							update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink);
 						} else {
@@ -932,7 +946,7 @@ fn main() {
 					}
 				}
 			} else {
-				match Select::new("Update one module or all?", vec!["all", "one"]).prompt().unwrap() {
+				match Select::new("Update one module or all?", vec!["all", "one"]).prompt().unwrap_or_else(|_| err_n_restart_services(nodered, simulink)) {
 					"all" =>  update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
 					"one" => {
 						if !modules.is_empty() {
@@ -948,7 +962,8 @@ fn main() {
 						}
 					}
 					_ => {
-						panic!("You shouldn't be here, turn back to whence you came");
+						eprintln!("You shouldn't be here, turn back to whence you came");
+						err_n_restart_services(nodered, simulink);
 					}
 				}
 			};
@@ -969,7 +984,7 @@ fn main() {
 					err_n_restart_services(nodered, simulink);
 				}
 			} else if !modules.is_empty() {
-				Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap()
+				Select::new(SLOT_PROMPT, modules).with_page_size(8).prompt().unwrap_or_else(|_| err_n_restart_services(nodered, simulink))
 			} else {
 				eprintln!("No modules found in the controller.");
 				err_n_restart_services(nodered, simulink);
@@ -992,7 +1007,7 @@ fn main() {
 					.filter(|firmware| firmware.get_hardware() == module.firmware.get_hardware())
 					.collect();
 				if !valid_firmwares.is_empty() {
-					*Select::new("Which firmware to upload?", valid_firmwares).prompt().unwrap()
+					*Select::new("Which firmware to upload?", valid_firmwares).prompt().unwrap_or_else(|_| err_n_restart_services(nodered, simulink))
 				} else {
 					eprintln!("No firmware(s) found for this module.");
 					err_n_restart_services(nodered, simulink);
