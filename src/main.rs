@@ -566,7 +566,6 @@ impl Module {
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
 			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == [255u8,255,255]) && available.get_software() != [255u8,255,255])//filter out wrong software versions
 			.map(|(i,available)| (i,available.get_software()))//turn them all into software versions
-			.inspect(|(_i,software)| println!("{:?}", software))
 			.reduce(|acc,(i, software)| if acc.1 < software { (i, software) } else { acc }) //cant use min/max because of the tuple, have to manually compare it in a reduce function
 		{
 			println!("updating slot {} from {} to {}", self.slot, self.firmware.as_string(), firmwares.get(index).unwrap().as_string());
