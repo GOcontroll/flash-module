@@ -593,21 +593,23 @@ impl Module {
 
 impl Display for Module {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{}", match self.firmware.get_hardware().get(1).unwrap() {
-			10 => match self.firmware.get_hardware().get(2).unwrap() {
-				1 => format!("slot {}: 6 Channel Input module",self.slot),
-				2 => format!("slot {}: 10 Channel Input module", self.slot),
-				3 => format!("slot {}: 4-20mA Input module", self.slot),
+		let hardware = self.firmware.get_hardware();
+		let software = self.firmware.get_software();
+		write!(f, "{}", match hardware[1] {
+			10 => match hardware[2] {
+				1 => format!("slot {}: 6 Channel Input module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
+				2 => format!("slot {}: 10 Channel Input module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
+				3 => format!("slot {}: 4-20mA Input module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
 				_ => format!("slot {}: unknown: {}",self.slot,self.firmware.as_string()),
 			},
-			20 => match self.firmware.get_hardware().get(2).unwrap() {
-				1 => format!("slot {}: 2 Channel Output module", self.slot),
-				2 => format!("slot {}: 6 Channel Output module", self.slot),
-				3 => format!("slot {}: 10 Channel Output module", self.slot),
+			20 => match hardware[2] {
+				1 => format!("slot {}: 2 Channel Output module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
+				2 => format!("slot {}: 6 Channel Output module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
+				3 => format!("slot {}: 10 Channel Output module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
 				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 			},
-			30 => match self.firmware.get_hardware().get(2).unwrap() {
-				3 => format!("slot {}: ANLEG IR module", self.slot),
+			30 => match hardware[2] {
+				3 => format!("slot {}: ANLEG IR module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
 				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 			},
 			_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
