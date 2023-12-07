@@ -917,9 +917,13 @@ fn main() {
 	match command {
 		CommandArg::Scan => {
 			//scan and save has already been done before this option was even selected, print out the values and exit
-			println!("found modules:");
-			for module in &modules {
-				println!("{}", module);
+			if !modules.is_empty() {
+				println!("Found modules:");
+				for module in &modules {
+					println!("{}", module);
+				}
+			} else {
+				println!("No modules found")
 			}
 			success(nodered, simulink);
 		},
