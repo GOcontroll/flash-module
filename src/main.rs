@@ -476,57 +476,35 @@ impl Module {
 						continue;
 					}
 
-					if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1){ // checksum correct?
-						if firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize { // does the firmware line in the message match the expected one?
-							if rx_buf[8] == 1 { // did the module receive the line correctly?
-								if firmware_error_counter & 0b1 > 0{ // if the error counter is uneven swap line number and the line being checked
-									std::mem::swap(&mut line_number, &mut firmware_line_check);
-								} else { // else set the check number to the line line number, line number will be incremented later if necessary
-									firmware_line_check = line_number;
-								}
-								// the last message needs to be handled differently as it will instantly jump to the firmware when this message is received correctly.
-								if message_type == 7 {
-									// prepare a dummy message to see if we get a response from the firmware or from the bootloader.
-									tx_buf_escape[0] = 49;
-									tx_buf_escape[1] = (BOOTMESSAGE_LENGTH-1) as u8;
-									tx_buf_escape[2] = 49;
-									tx_buf_escape[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf_escape, BOOTMESSAGE_LENGTH-1);
-									thread::sleep(Duration::from_millis(5));
-									_=self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf_escape, &mut rx_buf_escape));
-									if rx_buf_escape[rx_buf_escape[1] as usize] == calculate_checksum(&rx_buf_escape, rx_buf_escape[1] as usize) && rx_buf_escape[6] == 20 {
-										// received response from bootloader, finish the last line of the progress bar and let the while loop exit.
-										progress.inc(1);
-									} else {
-										// last message failed, set the message type to not 7 again so we don't exit the while loop and try again instead
-										message_type = 0;
-									}
-								} else {
-									// normal firmware message
-									line_number += 1;
-									firmware_error_counter = 0;
-									progress.inc(1);
-								}
+					if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1) && 
+					firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize &&
+					rx_buf[8] == 1 { // checksum correct?
+						if firmware_error_counter & 0b1 > 0{ // if the error counter is uneven swap line number and the line being checked
+							std::mem::swap(&mut line_number, &mut firmware_line_check);
+						} else { // else set the check number to the line line number, line number will be incremented later if necessary
+							firmware_line_check = line_number;
+						}
+						// the last message needs to be handled differently as it will instantly jump to the firmware when this message is received correctly.
+						if message_type == 7 {
+							// prepare a dummy message to see if we get a response from the firmware or from the bootloader.
+							tx_buf_escape[0] = 49;
+							tx_buf_escape[1] = (BOOTMESSAGE_LENGTH-1) as u8;
+							tx_buf_escape[2] = 49;
+							tx_buf_escape[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf_escape, BOOTMESSAGE_LENGTH-1);
+							thread::sleep(Duration::from_millis(5));
+							_=self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf_escape, &mut rx_buf_escape));
+							if rx_buf_escape[rx_buf_escape[1] as usize] == calculate_checksum(&rx_buf_escape, rx_buf_escape[1] as usize) && rx_buf_escape[6] == 20 {
+								// received response from bootloader, finish the last line of the progress bar and let the while loop exit.
+								progress.inc(1);
 							} else {
-								mem::swap(&mut line_number, &mut firmware_line_check);
+								// last message failed, set the message type to not 7 again so we don't exit the while loop and try again instead
 								message_type = 0;
-								firmware_error_counter += 1;
-
-								if firmware_error_counter > 10 {
-									eprintln!("Error: upload Failed, module did not receive message correctly");
-									progress.finish_and_clear();
-									return Err(UploadError::FirmwareCorrupted(self.slot));
-								}
 							}
 						} else {
-							mem::swap(&mut line_number, &mut firmware_line_check);
-							message_type = 0;
-							firmware_error_counter += 1;
-
-							if firmware_error_counter > 10 {
-								eprintln!("Error: upload Failed, lines didn't match");
-								progress.finish_and_clear();
-								return Err(UploadError::FirmwareCorrupted(self.slot));
-							}
+							// normal firmware message
+							line_number += 1;
+							firmware_error_counter = 0;
+							progress.inc(1);
 						}
 					} else {
 						mem::swap(&mut line_number, &mut firmware_line_check);
@@ -534,7 +512,7 @@ impl Module {
 						firmware_error_counter += 1;
 
 						if firmware_error_counter > 10 {
-							eprintln!("Error: upload Failed, checksum was incorrect");
+							eprintln!("Error: upload Failed");
 							progress.finish_and_clear();
 							return Err(UploadError::FirmwareCorrupted(self.slot));
 						}
@@ -546,7 +524,7 @@ impl Module {
 					firmware_error_counter += 1;
 
 					if firmware_error_counter > 10 {
-						eprintln!("Error: upload Failed, lines didn't match");
+						eprintln!("Error: upload Failed, spi transfer failed");
 						progress.finish_and_clear();
 						return Err(UploadError::FirmwareCorrupted(self.slot));
 					}
