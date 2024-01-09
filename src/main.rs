@@ -590,6 +590,10 @@ impl Display for Module {
 				3 => format!("slot {}: ANLEG IR module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
 				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 			},
+			40 => match hardware[2] {
+				1 => format!("slot {}: ANLEG RTC Control module version {} sw: {}.{}.{}", self.slot, hardware[3], software[0], software[1], software[2]),
+				_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
+			}
 			_ => format!("slot {}: unknown: {}", self.slot, self.firmware.as_string()),
 		})
 	}
@@ -854,7 +858,9 @@ fn main() {
 	});
 
 	//get all the firmwares
-	let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/").unwrap() // get the files in module-firmware
+	let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/").unwrap_or_else(|_| {
+		err_n_restart_services(nodered, simulink);
+	}) // get the files in module-firmware
 	.map(|file| file.unwrap().file_name().to_str().unwrap().to_string()) //turn them into strings
 	.filter(|file_name| file_name.ends_with(".srec")) //keep only the srec files
 	.map(|firmware| FirmwareVersion::from_filename(firmware).unwrap())//turn them into FirmwareVersion Structs
