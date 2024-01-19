@@ -104,9 +104,9 @@ enum CommandArg {
 impl Display for CommandArg {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{}", match self {
-			CommandArg::Scan => "scan",
-			CommandArg::Update => "update",
-			CommandArg::Overwrite => "overwrite",
+			Self::Scan => "scan",
+			Self::Update => "update",
+			Self::Overwrite => "overwrite",
 		})
 	}
 }
@@ -127,15 +127,15 @@ enum ControllerTypes {
 impl ControllerTypes {
 	fn get_empty_modules_file(&self) -> String {
     	match self {
-			ControllerTypes::ModulineIV => String::from(":::::::
+			Self::ModulineIV => String::from(":::::::
 :::::::
 :::::::
 :::::::"),
-			ControllerTypes::ModulineMini => String::from(":::
+			Self::ModulineMini => String::from(":::
 :::
 :::
 :::"),
-			ControllerTypes::ModulineDisplay => String::from(":
+			Self::ModulineDisplay => String::from(":
 :
 :
 :"),
@@ -242,7 +242,7 @@ impl Module {
 	}
 	
 	/// get information from the module like firmware, manufacture, qr codes
-	fn get_module_info(mut self) -> Option<Module> {
+	fn get_module_info(mut self) -> Option<Self> {
 		let mut tx_buf = [0u8;BOOTMESSAGE_LENGTH+1];
 		let mut rx_buf = [0u8;BOOTMESSAGE_LENGTH+1];
 
@@ -539,7 +539,7 @@ impl Module {
 	/// Update a module, checking for new matching firmwares in the firmwares parameter \
 	/// The outer Result<Result, UploadError> indicates whether there was an error in the upload process \
 	/// The inner Result<Module,Module> indicates whether there was an available update or not.
-	fn update_module(mut self, firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Module, Module>, UploadError> {
+	fn update_module(mut self, firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Self, Self>, UploadError> {
 		if let Some((index,_junk)) = firmwares.iter().enumerate()
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
 			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == [255u8,255,255]) && available.get_software() != [255u8,255,255])//filter out wrong software versions
@@ -850,6 +850,16 @@ fn main() {
 			.arg("stop")
 			.arg("go-simulink")
 			.status();
+	}
+
+	match ctrlc::set_handler(move || {
+		err_n_restart_services(nodered, simulink)
+	}) {
+		Ok(()) => (),
+		Err(err) => {
+			eprintln!("couldn't set sigint handler: {}", err);
+			err_n_restart_services(nodered, simulink);
+		}
 	}
 
 	//start getting module information in a seperate thread while other init is happening
