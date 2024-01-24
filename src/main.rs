@@ -15,6 +15,8 @@ use inquire::Select;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle, ProgressState};
 
+use tokio_gpiod::{Chip, Input, Options, Lines, EdgeDetect};
+
 const DUMMY_MESSAGE: [u8;5] = [0;5];
 
 const BOOTMESSAGE_LENGTH: usize = 46;
@@ -143,10 +145,10 @@ impl ControllerTypes {
 	}
 }
 
-#[derive(Debug)]
 struct Module {
 	slot: u8,
 	spidev: Spidev,
+	interrupt: Lines<Input>,
 	firmware: FirmwareVersion,
 	manufacturer: u32,
 	qr_front: u32,
@@ -155,34 +157,74 @@ struct Module {
 
 impl Module {
 	/// construct a new module at the given slot for the given controller type
-	fn new(slot:u8, controller: &ControllerTypes) -> Option<Self> {
+	async fn new(slot:u8, controller: &ControllerTypes) -> Option<Self> {
 		//get the spidev
-		let mut spidev = match controller { //get the Interrupt GPIO and the spidev
+		let (mut spidev, mut interrupt) = match controller { //get the Interrupt GPIO and the spidev
 			ControllerTypes::ModulineIV => {
 				match slot {
 					1 => {
-						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip0").await.unwrap(); //pin 156
+						let opts = Options::input([6])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 1 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					2 => {
-						Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip4").await.unwrap(); //pin 150
+						let opts = Options::input([20])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 2 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					3 => {
-						Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip0").await.unwrap(); //pin 157
+						let opts = Options::input([7])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 3 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					4 => {
-						Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip4").await.unwrap(); //pin 151
+						let opts = Options::input([21])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 4 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					5 => {
-						Spidev::new(File::open("/dev/spidev2.2").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip4").await.unwrap(); //pin 91
+						let opts = Options::input([1])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 5 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.2").expect(SPI_FILE_FAULT)),interrupt_pin)
 					},
 					6 => {
-						Spidev::new(File::open("/dev/spidev2.3").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip3").await.unwrap(); //pin 85
+						let opts = Options::input([26])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 6 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.3").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					7 => {
-						Spidev::new(File::open("/dev/spidev0.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip2").await.unwrap(); //pin 77
+						let opts = Options::input([19])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 7 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev0.0").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					8 => {
-						Spidev::new(File::open("/dev/spidev0.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip2").await.unwrap(); //pin 74
+						let opts = Options::input([22])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 8 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev0.1").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					_ => {
 						eprintln!("For the Moduline IV, slot should be a value from 1-8 but it was {}",slot);
@@ -193,16 +235,36 @@ impl Module {
 			ControllerTypes::ModulineMini => {
 				match slot {
 					1 => {
-						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip0").await.unwrap(); //pin 161
+						let opts = Options::input([10])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 1 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					2 => {
-						Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip0").await.unwrap(); //pin 155
+						let opts = Options::input([5])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 2 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					3 => {
-						Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip3").await.unwrap(); //pin 85
+						let opts = Options::input([26])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 3 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT)),interrupt_pin)
 					},
 					4 => {
-						Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip2").await.unwrap(); //pin 77
+						let opts = Options::input([19])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 4 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT)),interrupt_pin)
 					},
 					_ => {
 						eprintln!("For the Moduline Mini, slot should be a value from 1-4 but it was {}",slot);
@@ -213,10 +275,20 @@ impl Module {
 			ControllerTypes::ModulineDisplay => {
 				match slot {
 					1 => {
-						Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip3").await.unwrap(); //pin 43
+						let opts = Options::input([5])
+							.edge(EdgeDetect::Falling)
+							.consumer("module 1 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)),interrupt_pin)
 					},
 					2 => {
-						Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT))
+						let chip = Chip::new("gpiochip0").await.unwrap(); //pin 152
+						let opts = Options::input([0])
+							.edge(tokio_gpiod::EdgeDetect::Falling)
+							.consumer("module 2 interrupt");
+						let interrupt_pin = chip.request_lines(opts).await.unwrap();
+						(Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)), interrupt_pin)
 					},
 					_ => {
 						eprintln!("For the Moduline Display, slot should be a value from 1-2 but it was {}",slot);
@@ -233,6 +305,7 @@ impl Module {
 		let module = Self {
 			slot,
 			spidev,
+			interrupt,
 			firmware: FirmwareVersion { firmware: [0;7] },
 			manufacturer: 0,
 			qr_front: 0,
@@ -346,7 +419,7 @@ impl Module {
 	/// | lineCheck  n-2| lineCheck  n-1| lineCheck  n  | lineCheck  n-1| lineCheck  n-1| lineCheck  n  | lineCheck  n  | lineCheck  n                  |
 	/// | errorCount 0  | errorCount 1  | errorCount 2  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0  | errorCount 0                  |
 	///```
-	fn overwrite_module(&mut self, new_firmware: &FirmwareVersion, multi_progress: MultiProgress, style: ProgressStyle) -> Result<(), UploadError> {
+	async fn overwrite_module(&mut self, new_firmware: &FirmwareVersion, multi_progress: MultiProgress, style: ProgressStyle) -> Result<(), UploadError> {
 		let mut tx_buf_escape = [0u8;BOOTMESSAGE_LENGTH_CHECK];
 		let mut rx_buf_escape = [0u8;BOOTMESSAGE_LENGTH_CHECK];
 
@@ -539,7 +612,7 @@ impl Module {
 	/// Update a module, checking for new matching firmwares in the firmwares parameter \
 	/// The outer Result<Result, UploadError> indicates whether there was an error in the upload process \
 	/// The inner Result<Module,Module> indicates whether there was an available update or not.
-	fn update_module(mut self, firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Self, Self>, UploadError> {
+	async fn update_module(mut self, firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle) -> Result<Result<Self, Self>, UploadError> {
 		if let Some((index,_junk)) = firmwares.iter().enumerate()
 			.filter(|(_i,available)| available.get_hardware() == self.firmware.get_hardware())//filter out incorrect hardware versions
 			.filter(|(_i,available)| (available.get_software() > self.firmware.get_software() || self.firmware.get_software() == [255u8,255,255]) && available.get_software() != [255u8,255,255])//filter out wrong software versions
@@ -547,7 +620,7 @@ impl Module {
 			.reduce(|acc,(i, software)| if acc.1 < software { (i, software) } else { acc }) //cant use min/max because of the tuple, have to manually compare it in a reduce function
 		{
 			println!("updating slot {} from {} to {}", self.slot, self.firmware.as_string(), firmwares.get(index).unwrap().as_string());
-			match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style) {
+			match self.overwrite_module(firmwares.get(index).unwrap(),multi_progress, style).await {
 				Ok(()) => {
 					self.firmware = *firmwares.get(index).unwrap();
 					Ok(Ok(self)) //firmware updated successfully
@@ -662,29 +735,27 @@ where
 }
 
 /// get the current modules in the controller
-fn get_modules(controller: &ControllerTypes) -> Vec<Module> {
+async fn get_modules(controller: &ControllerTypes) -> Vec<Module> {
 	let mut modules = Vec::with_capacity(8);
-	thread::scope(|t| {
-		let mut scan_threads = Vec::with_capacity(8);
-		let controller = *controller;
-		for i in 1..controller as usize {
-			scan_threads.push(t.spawn(move || {
-				Module::new(i as u8, &controller)
-			}))
-		}
-		for thread in scan_threads {
-			if let Ok(Some(module)) = thread.join() {
-				modules.push(module);
-			}
+	let mut set = tokio::task::JoinSet::new();
+	let controller = *controller;
+	for i in 1..controller as usize {
+		set.spawn(async move {
+			Module::new(i as u8, &controller).await
+		});
 	}
-	});
+	for _ in 1..controller as usize {
+		if let Some(Ok(Some(module))) = set.join_next().await {
+			modules.push(module);
+		}
+	}
 	modules
 
 }
 
 /// get the modules in the controller and save them
-fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
-	let modules = get_modules(controller);
+async fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
+	let modules = get_modules(controller).await;
 	let mut modules_out: Vec<Option<Module>> = match &controller {
 		ControllerTypes::ModulineDisplay => vec![None,None],
 		ControllerTypes::ModulineIV => vec![None,None,None,None,None,None,None,None],
@@ -736,8 +807,8 @@ fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> V
 	modules.into_iter().flatten().collect()
 }
 
-fn update_one_module(module: Module, available_firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
-    match module.update_module(available_firmwares, multi_progress, style) {
+async fn update_one_module(module: Module, available_firmwares: &[FirmwareVersion], multi_progress: MultiProgress, style: ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+    match module.update_module(available_firmwares, multi_progress, style).await {
 		Ok(Ok(module)) => {
 			println!("Succesfully updated slot {} to {}", module.slot,module.firmware.as_string());
 			save_modules(vec![Some(module)], &controller);
@@ -759,21 +830,19 @@ fn update_one_module(module: Module, available_firmwares: &[FirmwareVersion], mu
 	}
 }
 
-fn update_all_modules(modules: Vec<Module>, available_firmwares: &[FirmwareVersion], multi_progress: &MultiProgress, style: &ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
+async fn update_all_modules(modules: Vec<Module>, available_firmwares: &[FirmwareVersion], multi_progress: &MultiProgress, style: &ProgressStyle, controller: ControllerTypes, nodered: bool, simulink: bool) -> ! {
     let mut upload_results = Vec::with_capacity(modules.len());
     let mut new_modules = Vec::with_capacity(modules.len());
     let mut firmware_corrupted = false;
-    thread::scope(|t|{
-		let mut threads = Vec::with_capacity(modules.len());
-		for module in modules {
-			threads.push(t.spawn(|| {
-				module.update_module(available_firmwares, multi_progress.clone(), style.clone())
-			}))
-		}
-		for thread in threads {
-			upload_results.push(thread.join().unwrap())
-		}
-	});
+    let mut set = tokio::task::JoinSet::new();
+	for module in modules {
+		set.spawn(async move {
+			module.update_module(available_firmwares, multi_progress.clone(), style.clone()).await
+		});
+	}
+	for _ in 0..new_modules.len() {
+		upload_results.push(set.join_next().await.unwrap().unwrap());
+	}
     for result in upload_results {
 		match result {
 			Ok(Ok(module)) => { //module updated
@@ -807,7 +876,8 @@ fn update_all_modules(modules: Vec<Module>, available_firmwares: &[FirmwareVersi
     success(nodered, simulink);
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
 	//get the controller hardware
 	let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").unwrap_or_else(|_|{
 		err_n_die("Could not find a hardware description file, this feature is not supported by your hardware.");
@@ -863,9 +933,7 @@ fn main() {
 	}
 
 	//start getting module information in a seperate thread while other init is happening
-	let modules_thread = thread::spawn(move || {
-		get_modules_and_save(&controller)
-	});
+	let modules_fut = get_modules_and_save(&controller);
 
 	//get all the firmwares
 	let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/").unwrap_or_else(|_| {
@@ -900,13 +968,7 @@ fn main() {
 	};
 
 	//get the modules from the previously started thread
-	let modules =  match modules_thread.join() {
-		Ok(modules) => modules,
-		Err(err) => {
-			eprintln!("failed to get module info: {:?}", err);
-			err_n_restart_services(nodered, simulink);
-		}
-	};
+	let modules =  modules_fut.await;
 
 	match command {
 		CommandArg::Scan => {
@@ -927,14 +989,14 @@ fn main() {
 			//find the update type
 			if let Some(arg) = env::args().nth(2) {
 				match arg.as_str() {
-					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
+					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink).await,
 					_ => if let Ok(slot) = arg.parse::<u8>() {
 						if slot < controller as u8 || slot >= 1 {
-							let module = Module::new(slot, &controller).unwrap_or_else(||{
+							let module = Module::new(slot, &controller).await.unwrap_or_else(||{
 								eprintln!("Couldn't find a module in slot {}", slot);
 								err_n_restart_services(nodered, simulink);
 							});
-							update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink);
+							update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink).await;
 						} else {
 							eprintln!("{}", USAGE);
 							err_n_restart_services(nodered, simulink);
@@ -946,11 +1008,11 @@ fn main() {
 				}
 			} else {
 				match Select::new("Update one module or all?", vec!["all", "one"]).prompt().unwrap_or_else(|_| err_n_restart_services(nodered, simulink)) {
-					"all" =>  update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink),
+					"all" =>  update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink).await,
 					"one" => {
 						if !modules.is_empty() {
 							match Select::new("select a module to update", modules).with_page_size(8).prompt() {
-								Ok(module) => update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink),
+								Ok(module) => update_one_module(module, &available_firmwares, multi_progress, style, controller, nodered, simulink).await,
 								Err(_) => {
 									err_n_restart_services(nodered, simulink);
 								}
@@ -972,7 +1034,7 @@ fn main() {
 		CommandArg::Overwrite => {
 			let mut module = if let Some(arg) = env::args().nth(2) {
 				if let Ok(slot) = arg.parse::<u8>() {
-					if let Some(module) = Module::new(slot, &controller) {
+					if let Some(module) = Module::new(slot, &controller).await {
 						module
 					} else {
 						eprintln!("No module present in that slot");
@@ -1012,7 +1074,7 @@ fn main() {
 					err_n_restart_services(nodered, simulink);
 				}
 			};
-			match module.overwrite_module(&new_firmware, multi_progress, style) {
+			match module.overwrite_module(&new_firmware, multi_progress, style).await {
 				Ok(()) => {
 					println!("succesfully updated slot {} from {} to {}", module.slot, module.firmware.as_string(), new_firmware.as_string());
 					module.firmware = new_firmware;
