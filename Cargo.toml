@@ -26,5 +26,5 @@ spidev = "0.6"
 inquire = "0.6"
 indicatif = "0.17"
 ctrlc = "3.4"
-tokio = { version = "1.33.0", features = ["rt", "macros"]}
+tokio = { version = "1.33.0", features = ["rt", "macros", "time"]}
 tokio-gpiod = { version = "0.2.3", default-features = true }

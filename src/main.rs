@@ -15,6 +15,7 @@ use inquire::Select;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle, ProgressState};
 
+use tokio::time::timeout;
 use tokio_gpiod::{Chip, Input, Options, Lines, EdgeDetect};
 
 const DUMMY_MESSAGE: [u8;5] = [0;5];
@@ -159,7 +160,7 @@ impl Module {
 	/// construct a new module at the given slot for the given controller type
 	async fn new(slot:u8, controller: &ControllerTypes) -> Option<Self> {
 		//get the spidev
-		let (mut spidev, mut interrupt) = match controller { //get the Interrupt GPIO and the spidev
+		let (mut spidev, interrupt) = match controller { //get the Interrupt GPIO and the spidev
 			ControllerTypes::ModulineIV => {
 				match slot {
 					1 => {
@@ -460,7 +461,7 @@ impl Module {
 		tx_buf[8] = sw[2];
 
 		tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
-
+		let interrupt = self.interrupt.read_event();
 		match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
 			Ok(()) => (),
 			Err(err) => {
@@ -472,8 +473,11 @@ impl Module {
 		let spinner = multi_progress.add(ProgressBar::new_spinner());
 		spinner.set_message(format!("Wiping old firmware on slot {}",self.slot));
 		spinner.enable_steady_tick(Duration::from_millis(100));
-
-		thread::sleep(Duration::from_millis(2500)); // give the module time to wipe the old firmware
+		match tokio::time::timeout(Duration::from_millis(2500), interrupt).await {
+			Ok(Ok(_)) => (), //exited because of interrupt
+			_ => eprintln!("No interrupt") //exited because of timeout
+		}
+		//thread::sleep(Duration::from_millis(2500)); // give the module time to wipe the old firmware
 		spinner.finish_and_clear();
 
 		let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
@@ -493,17 +497,26 @@ impl Module {
 				tx_buf[1] = (BOOTMESSAGE_LENGTH-1) as u8;
 				tx_buf[2] = 49;
 				tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
+				let interrupt = self.interrupt.read_event();
 				match self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf)) {
 					Ok(()) => {
 						if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1) &&
 						firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize &&
 						rx_buf[8] == 1 {
-							thread::sleep(Duration::from_millis(5));
+							match timeout(Duration::from_millis(5), interrupt).await {
+								Ok(Ok(_)) => (),
+								_ => eprintln!("no interrupt")
+							}
+							// thread::sleep(Duration::from_millis(5));
 						} else {
 							firmware_error_counter += 1;
 							mem::swap(&mut line_number, &mut firmware_line_check);
 							message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
-							thread::sleep(Duration::from_millis(5));
+							match timeout(Duration::from_millis(5), interrupt).await {
+								Ok(Ok(_)) => (),
+								_ => eprintln!("no interrupt")
+							}
+							// thread::sleep(Duration::from_millis(5));
 							continue;
 						}
 					},
@@ -511,7 +524,11 @@ impl Module {
 						firmware_error_counter += 1;
 						mem::swap(&mut line_number, &mut firmware_line_check);
 						message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
-						thread::sleep(Duration::from_millis(5));
+						match timeout(Duration::from_millis(5), interrupt).await {
+								Ok(Ok(_)) => (),
+								_ => eprintln!("no interrupt")
+							}
+						// thread::sleep(Duration::from_millis(5));
 						continue;
 					},
 				}
@@ -538,10 +555,14 @@ impl Module {
 			tx_buf[send_buffer_pointer] = u8::from_str_radix(lines[line_number].get(message_pointer..message_pointer+2).unwrap(), 16).unwrap();
 
 			tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
-
+			let interrupt = self.interrupt.read_event();
 			match self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf)) {
 				Ok(_) => {
-					thread::sleep(Duration::from_millis(1));
+					match timeout(Duration::from_millis(1), interrupt).await {
+						Ok(Ok(_)) => (),
+						_ => eprintln!("no interrupt")
+					}
+					// thread::sleep(Duration::from_millis(1));
 					// the first message will always receive junk, ignore this junk and continue to line 1
 					if firmware_line_check == usize::MAX {
 						line_number +=1;
