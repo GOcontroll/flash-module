@@ -836,8 +836,11 @@ async fn update_all_modules(modules: Vec<Module>, available_firmwares: &[Firmwar
     let mut firmware_corrupted = false;
     let mut set = tokio::task::JoinSet::new();
 	for module in modules {
+		let available_firmwares = available_firmwares.to_owned();
+		let multi_progress = multi_progress.clone();
+		let style = style.clone();
 		set.spawn(async move {
-			module.update_module(available_firmwares, multi_progress.clone(), style.clone()).await
+			module.update_module(available_firmwares.as_slice(), multi_progress, style).await
 		});
 	}
 	for _ in 0..new_modules.len() {
