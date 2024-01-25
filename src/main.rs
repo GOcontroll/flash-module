@@ -377,7 +377,7 @@ impl Module {
 	/// The old, send a line of firmware, then send a status request to check if it was uploaded correctly, try again if not, move on to the next line if it was. \
 	/// This requires at least two messages sent per line of firmware, theoretically doubling the time to upload one piece of firmware.
 	///
-	/// The new fast but but complex way, keep track of the line of which you will receive feedback while also keeping track of what you are currently sending, \
+	/// The new fast but complex way, keep track of the line of which you will receive feedback while also keeping track of what you are currently sending, \
 	/// this gets complicated once errors start happening. The diagrams below will explain what happens in which situation: \
 	/// normal function: \
 	/// ``` text
@@ -459,7 +459,10 @@ impl Module {
 		tx_buf[6] = sw[0];
 		tx_buf[7] = sw[1];
 		tx_buf[8] = sw[2];
-
+		//this is super scuffed but for some reason it queues up events, so when in earlier parts the interrupt happens it fills the queue, causing it to skip the memory wipe interrupt and fail
+		while let Ok(Ok(_)) = tokio::time::timeout(Duration::from_millis(1),self.interrupt.read_event()).await {
+			()
+		}
 		tx_buf[BOOTMESSAGE_LENGTH-1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH-1);
 		let interrupt = self.interrupt.read_event();
 		match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
@@ -542,7 +545,6 @@ impl Module {
 			let interrupt = self.interrupt.read_event();
 			match self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf)) {
 				Ok(_) => {
-					_ = timeout(Duration::from_millis(1), interrupt).await;
 					// the first message will always receive junk, ignore this junk and continue to line 1
 					if firmware_line_check == usize::MAX {
 						line_number +=1;
@@ -591,6 +593,7 @@ impl Module {
 							return Err(UploadError::FirmwareCorrupted(self.slot));
 						}
 					}
+					_ = timeout(Duration::from_millis(1), interrupt).await;
 				},
 				Err(_) => {
 					mem::swap(&mut line_number, &mut firmware_line_check);
@@ -602,6 +605,7 @@ impl Module {
 						progress.finish_and_clear();
 						return Err(UploadError::FirmwareCorrupted(self.slot));
 					}
+					_ = timeout(Duration::from_millis(1), interrupt).await;
 				}
 			}
 		}
