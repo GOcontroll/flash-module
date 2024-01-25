@@ -844,7 +844,7 @@ async fn update_all_modules(modules: Vec<Module>, available_firmwares: &[Firmwar
 			module.update_module(available_firmwares.as_slice(), multi_progress, style).await
 		});
 	}
-	for _ in 0..new_modules.len() {
+	for _ in 0..set.len() {
 		upload_results.push(set.join_next().await.unwrap().unwrap());
 	}
     for result in upload_results {
