@@ -473,11 +473,7 @@ impl Module {
 		let spinner = multi_progress.add(ProgressBar::new_spinner());
 		spinner.set_message(format!("Wiping old firmware on slot {}",self.slot));
 		spinner.enable_steady_tick(Duration::from_millis(100));
-		match tokio::time::timeout(Duration::from_millis(2500), interrupt).await {
-			Ok(Ok(_)) => (), //exited because of interrupt
-			_ => eprintln!("No interrupt") //exited because of timeout
-		}
-		//thread::sleep(Duration::from_millis(2500)); // give the module time to wipe the old firmware
+		_ = tokio::time::timeout(Duration::from_millis(2500), interrupt).await;
 		spinner.finish_and_clear();
 
 		let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
@@ -503,20 +499,12 @@ impl Module {
 						if rx_buf[BOOTMESSAGE_LENGTH-1] == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1) &&
 						firmware_line_check == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap())) as usize &&
 						rx_buf[8] == 1 {
-							match timeout(Duration::from_millis(5), interrupt).await {
-								Ok(Ok(_)) => (),
-								_ => eprintln!("no interrupt")
-							}
-							// thread::sleep(Duration::from_millis(5));
+							_ = timeout(Duration::from_millis(5), interrupt).await;
 						} else {
 							firmware_error_counter += 1;
 							mem::swap(&mut line_number, &mut firmware_line_check);
 							message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
-							match timeout(Duration::from_millis(5), interrupt).await {
-								Ok(Ok(_)) => (),
-								_ => eprintln!("no interrupt")
-							}
-							// thread::sleep(Duration::from_millis(5));
+							_ = timeout(Duration::from_millis(5), interrupt).await;
 							continue;
 						}
 					},
@@ -524,11 +512,7 @@ impl Module {
 						firmware_error_counter += 1;
 						mem::swap(&mut line_number, &mut firmware_line_check);
 						message_type = 0; //last message failed, set the message type to not 7 again so we don't exit the while loop
-						match timeout(Duration::from_millis(5), interrupt).await {
-								Ok(Ok(_)) => (),
-								_ => eprintln!("no interrupt")
-							}
-						// thread::sleep(Duration::from_millis(5));
+						_ = timeout(Duration::from_millis(5), interrupt).await;
 						continue;
 					},
 				}
@@ -558,11 +542,7 @@ impl Module {
 			let interrupt = self.interrupt.read_event();
 			match self.spidev.transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf)) {
 				Ok(_) => {
-					match timeout(Duration::from_millis(1), interrupt).await {
-						Ok(Ok(_)) => (),
-						_ => eprintln!("no interrupt")
-					}
-					// thread::sleep(Duration::from_millis(1));
+					_ = timeout(Duration::from_millis(1), interrupt).await;
 					// the first message will always receive junk, ignore this junk and continue to line 1
 					if firmware_line_check == usize::MAX {
 						line_number +=1;
@@ -900,7 +880,7 @@ async fn update_all_modules(modules: Vec<Module>, available_firmwares: &[Firmwar
     success(nodered, simulink);
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 async fn main() {
 	//get the controller hardware
 	let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").unwrap_or_else(|_|{
@@ -1016,7 +996,7 @@ async fn main() {
 					"all" => update_all_modules(modules, &available_firmwares, &multi_progress, &style, controller, nodered, simulink).await,
 					_ => if let Ok(slot) = arg.parse::<u8>() {
 						if slot < controller as u8 || slot >= 1 {
-							let module = Module::new(slot, &controller).await.unwrap_or_else(||{
+							let module = modules.into_iter().find(|module| module.slot == slot).take().unwrap_or_else(||{
 								eprintln!("Couldn't find a module in slot {}", slot);
 								err_n_restart_services(nodered, simulink);
 							});
@@ -1058,12 +1038,10 @@ async fn main() {
 		CommandArg::Overwrite => {
 			let mut module = if let Some(arg) = env::args().nth(2) {
 				if let Ok(slot) = arg.parse::<u8>() {
-					if let Some(module) = Module::new(slot, &controller).await {
-						module
-					} else {
-						eprintln!("No module present in that slot");
+					modules.into_iter().find(|module| module.slot == slot).take().unwrap_or_else(||{
+						eprintln!("Couldn't find a module in slot {}", slot);
 						err_n_restart_services(nodered, simulink);
-					}
+					})
 				} else {
 					eprintln!("Invalid slot entered\n{}", USAGE);
 					err_n_restart_services(nodered, simulink);
