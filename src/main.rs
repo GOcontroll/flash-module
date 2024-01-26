@@ -940,8 +940,8 @@ async fn get_modules(controller: &ControllerTypes) -> Vec<Module> {
 }
 
 /// get the modules in the controller and save them
-async fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
-    let modules = get_modules(controller).await;
+async fn get_modules_and_save(controller: ControllerTypes) -> Vec<Module> {
+    let modules = get_modules(&controller).await;
     let mut modules_out: Vec<Option<Module>> = match &controller {
         ControllerTypes::ModulineDisplay => vec![None, None],
         ControllerTypes::ModulineIV => vec![None, None, None, None, None, None, None, None],
@@ -951,7 +951,7 @@ async fn get_modules_and_save(controller: &ControllerTypes) -> Vec<Module> {
         let slot = module.slot;
         modules_out[(slot - 1) as usize] = Some(module);
     }
-    save_modules(modules_out, controller)
+    save_modules(modules_out, &controller)
 }
 
 /// save all the modules to modules to /usr/module-firmware/modules.txt, None elements will be removed from the file
@@ -1143,7 +1143,7 @@ async fn main() {
     } else if hardware_string.contains("Moduline Screen") {
         ControllerTypes::ModulineDisplay
     } else {
-        err_n_die(format!("{} does not exist. Can't proceed", hardware_string).as_str());
+        err_n_die(format!("{} is not a supported GOcontroll Moduline product. Can't proceed", hardware_string).as_str());
     };
 
     //stop services potentially trying to use the module
@@ -1187,8 +1187,8 @@ async fn main() {
         }
     }
 
-    //start getting module information in a seperate thread while other init is happening
-    let modules_fut = get_modules_and_save(&controller);
+    //start getting module information in a seperate task while other init is happening
+	let modules_fut = tokio::task::spawn(get_modules_and_save(controller));
 
     //get all the firmwares
     let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/")
@@ -1228,8 +1228,11 @@ async fn main() {
         .unwrap_or_else(|_| err_n_restart_services(nodered, simulink))
     };
 
-    //get the modules from the previously started thread
-    let modules = modules_fut.await;
+    //get the modules from the previously started task
+    let modules = modules_fut.await.unwrap_or_else(|_| {
+		eprintln!("Could not get module information");
+		err_n_restart_services(nodered, simulink);
+	});	
 
     match command {
         CommandArg::Scan => {
