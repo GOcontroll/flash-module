@@ -27,4 +27,5 @@ inquire = "0.6"
 indicatif = "0.17"
 ctrlc = "3.4"
 tokio = { version = "1.33.0", features = ["rt", "macros", "time", "rt-multi-thread"]}
-tokio-gpiod = { version = "0.2.3", default-features = true }
+gpio-cdev = { version = "0.6", features = ["async-tokio"]}
+futures = "0.3"

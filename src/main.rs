@@ -7,6 +7,8 @@ use std::{
     time::Duration,
 };
 
+use futures::StreamExt;
+
 use spidev::{SpiModeFlags, Spidev, SpidevOptions, SpidevTransfer};
 
 use inquire::Select;
@@ -14,14 +16,13 @@ use inquire::Select;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 
 use tokio::{task, task::JoinSet, time, time::timeout};
-use tokio_gpiod::{Chip, EdgeDetect, Input, Lines, Options};
+
+use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, LineRequestFlags};
 
 const DUMMY_MESSAGE: [u8; 5] = [0; 5];
 
 const BOOTMESSAGE_LENGTH: usize = 46;
 const BOOTMESSAGE_LENGTH_CHECK: usize = 61;
-
-const SPI_FILE_FAULT: &str = "spidev does not exist";
 
 const SLOT_PROMPT: &str = "Which slot to overwrite?";
 
@@ -164,7 +165,7 @@ impl ControllerTypes {
 struct Module {
     slot: u8,
     spidev: Spidev,
-    interrupt: Lines<Input>,
+    interrupt: AsyncLineEventHandle,
     firmware: FirmwareVersion,
     manufacturer: u32,
     qr_front: u32,
@@ -177,184 +178,138 @@ impl Module {
         //get the spidev
         let (mut spidev, interrupt) = match controller {
             //get the Interrupt GPIO and the spidev
-            ControllerTypes::ModulineIV => {
-                match slot {
-                    1 => {
-                        let chip = Chip::new("gpiochip0").await.unwrap(); //pin 156
-                        let opts = Options::input([6])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 1 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    2 => {
-                        let chip = Chip::new("gpiochip4").await.unwrap(); //pin 150
-                        let opts = Options::input([20])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 2 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    3 => {
-                        let chip = Chip::new("gpiochip0").await.unwrap(); //pin 157
-                        let opts = Options::input([7])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 3 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    4 => {
-                        let chip = Chip::new("gpiochip4").await.unwrap(); //pin 151
-                        let opts = Options::input([21])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 4 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    5 => {
-                        let chip = Chip::new("gpiochip4").await.unwrap(); //pin 91
-                        let opts = Options::input([1])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 5 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.2").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    6 => {
-                        let chip = Chip::new("gpiochip3").await.unwrap(); //pin 85
-                        let opts = Options::input([26])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 6 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.3").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    7 => {
-                        let chip = Chip::new("gpiochip2").await.unwrap(); //pin 77
-                        let opts = Options::input([19])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 7 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev0.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    8 => {
-                        let chip = Chip::new("gpiochip2").await.unwrap(); //pin 74
-                        let opts = Options::input([22])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 8 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev0.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    _ => {
-                        eprintln!(
-                            "For the Moduline IV, slot should be a value from 1-8 but it was {}",
-                            slot
-                        );
-                        return None;
-                    }
+            ControllerTypes::ModulineIV => match slot {
+                1 => (
+                    Spidev::new(
+                        File::open("/dev/spidev1.0")
+                            .map_err(|_| eprintln!("Could not get slot 1 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip0", 6, slot)?,
+                ),
+                2 => (
+                    Spidev::new(
+                        File::open("/dev/spidev1.1")
+                            .map_err(|_| eprintln!("Could not get slot 2 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip4", 20, slot)?,
+                ),
+                3 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.0")
+                            .map_err(|_| eprintln!("Could not get slot 3 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip0", 7, slot)?,
+                ),
+                4 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.1")
+                            .map_err(|_| eprintln!("Could not get slot 4 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip4", 21, slot)?,
+                ),
+                5 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.2")
+                            .map_err(|_| eprintln!("Could not get slot 5 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip4", 1, slot)?,
+                ),
+                6 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.3")
+                            .map_err(|_| eprintln!("Could not get slot 6 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip3", 26, slot)?,
+                ),
+                7 => (
+                    Spidev::new(
+                        File::open("/dev/spidev0.0")
+                            .map_err(|_| eprintln!("Could not get slot 7 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip2", 19, slot)?,
+                ),
+                8 => (
+                    Spidev::new(
+                        File::open("/dev/spidev0.1")
+                            .map_err(|_| eprintln!("Could not get slot 8 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip2", 22, slot)?,
+                ),
+                _ => {
+                    eprintln!(
+                        "For the Moduline IV, slot should be a value from 1-8 but it was {}",
+                        slot
+                    );
+                    return None;
                 }
-            }
-            ControllerTypes::ModulineMini => {
-                match slot {
-                    1 => {
-                        let chip = Chip::new("gpiochip0").await.unwrap(); //pin 161
-                        let opts = Options::input([10])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 1 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    2 => {
-                        let chip = Chip::new("gpiochip0").await.unwrap(); //pin 155
-                        let opts = Options::input([5])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 2 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    3 => {
-                        let chip = Chip::new("gpiochip3").await.unwrap(); //pin 85
-                        let opts = Options::input([26])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 3 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    4 => {
-                        let chip = Chip::new("gpiochip2").await.unwrap(); //pin 77
-                        let opts = Options::input([19])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 4 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev2.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    _ => {
-                        eprintln!(
-                            "For the Moduline Mini, slot should be a value from 1-4 but it was {}",
-                            slot
-                        );
-                        return None;
-                    }
+            },
+            ControllerTypes::ModulineMini => match slot {
+                1 => (
+                    Spidev::new(
+                        File::open("/dev/spidev1.0")
+                            .map_err(|_| eprintln!("Could not get slot 1 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip0", 10, slot)?,
+                ),
+                2 => (
+                    Spidev::new(
+                        File::open("/dev/spidev1.1")
+                            .map_err(|_| eprintln!("Could not get slot 2 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip0", 5, slot)?,
+                ),
+                3 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.0")
+                            .map_err(|_| eprintln!("Could not get slot 3 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip3", 26, slot)?,
+                ),
+                4 => (
+                    Spidev::new(
+                        File::open("/dev/spidev2.1")
+                            .map_err(|_| eprintln!("Could not get slot 4 spidev"))
+                            .ok()?,
+                    ),
+                    get_interrupt("/dev/gpiochip2", 19, slot)?,
+                ),
+                _ => {
+                    eprintln!(
+                        "For the Moduline Mini, slot should be a value from 1-4 but it was {}",
+                        slot
+                    );
+                    return None;
                 }
-            }
+            },
             ControllerTypes::ModulineDisplay => {
                 match slot {
-                    1 => {
-                        let chip = Chip::new("gpiochip3").await.unwrap(); //pin 43
-                        let opts = Options::input([5])
-                            .edge(EdgeDetect::Falling)
-                            .consumer("module 1 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.0").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
-                    2 => {
-                        let chip = Chip::new("gpiochip0").await.unwrap(); //pin 152
-                        let opts = Options::input([0])
-                            .edge(tokio_gpiod::EdgeDetect::Falling)
-                            .consumer("module 2 interrupt");
-                        let interrupt_pin = chip.request_lines(opts).await.unwrap();
-                        (
-                            Spidev::new(File::open("/dev/spidev1.1").expect(SPI_FILE_FAULT)),
-                            interrupt_pin,
-                        )
-                    }
+                    1 => (
+                        Spidev::new(
+                            File::open("/dev/spidev1.0")
+                                .map_err(|_| eprintln!("Could not get slot 1 spidev"))
+                                .ok()?,
+                        ),
+                        get_interrupt("/dev/gpiochip3", 5, slot)?,
+                    ),
+                    2 => (
+                        Spidev::new(
+                            File::open("/dev/spidev1.1")
+                                .map_err(|_| eprintln!("Could not get slot 2 spidev"))
+                                .ok()?,
+                        ),
+                        get_interrupt("/dev/gpiochip0", 0, slot)?,
+                    ),
                     _ => {
                         eprintln!("For the Moduline Display, slot should be a value from 1-2 but it was {}",slot);
                         return None;
@@ -370,7 +325,8 @@ impl Module {
                     .mode(SpiModeFlags::SPI_MODE_0)
                     .build(),
             )
-            .unwrap();
+            .map_err(|_| eprintln!("Could not configure spidev for slot {}", slot))
+            .ok()?;
         let module = Self {
             slot,
             spidev,
@@ -546,11 +502,12 @@ impl Module {
         tx_buf[BOOTMESSAGE_LENGTH - 1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
 
         //this is super scuffed but for some reason it queues up events, so when in earlier parts the interrupt happens it fills the queue, causing it to skip the memory wipe interrupt and fail
-        while let Ok(Ok(_)) = timeout(Duration::from_millis(1), self.interrupt.read_event()).await {
+        while let Ok(_) = timeout(Duration::from_millis(1), self.interrupt.next()).await {
             ()
         }
+
         //register the interrupt waiter
-        let interrupt = self.interrupt.read_event();
+        let interrupt = self.interrupt.next();
         match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
             Ok(()) => (),
             Err(err) => {
@@ -598,7 +555,7 @@ impl Module {
                 tx_buf[2] = 49;
                 tx_buf[BOOTMESSAGE_LENGTH - 1] =
                     calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
-                let interrupt = self.interrupt.read_event();
+                let interrupt = self.interrupt.next();
                 match self
                     .spidev
                     .transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf))
@@ -663,7 +620,7 @@ impl Module {
             .unwrap();
 
             tx_buf[BOOTMESSAGE_LENGTH - 1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
-            let interrupt = self.interrupt.read_event();
+            let interrupt = self.interrupt.next();
             match self
                 .spidev
                 .transfer(&mut SpidevTransfer::read_write(&tx_buf, &mut rx_buf))
@@ -724,17 +681,19 @@ impl Module {
                         mem::swap(&mut line_number, &mut firmware_line_check);
                         message_type = 0;
                         firmware_error_counter += 1;
-
+                        #[cfg(debug_assertions)]
                         if !local_checksum_match {
                             progress.println(format!(
                                 "Error slot {}: checksum from module: {} didn't match with the calculated one: {}",
                                 self.slot, rx_buf[BOOTMESSAGE_LENGTH-1], calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1)
                             ));
                         }
+                        #[cfg(debug_assertions)]
                         if !received_line_match {
                             // use line number as it has been mem::swapped just before with firmware line check, which is the on we want
                             progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
                         }
+                        #[cfg(debug_assertions)]
                         if !remote_checksum_match {
                             progress.println(format!(
                                 "Error slot {}: module did not receive the firmware line correctly",
@@ -952,6 +911,24 @@ where
     let mut a = A::default();
     <A as AsMut<[T]>>::as_mut(&mut a).clone_from_slice(slice);
     a
+}
+
+/// get module interrupt pin
+fn get_interrupt(chip: &str, line: u32, slot: u8) -> Option<AsyncLineEventHandle> {
+    let mut chip = Chip::new(chip)
+        .map_err(|_| eprintln!("Could not get slot {slot} interrupt chip"))
+        .ok()?;
+    let line = chip
+        .get_line(line)
+        .map_err(|_| eprintln!("Could not get slot {slot} interrupt line"))
+        .ok()?;
+    line.async_events(
+        LineRequestFlags::INPUT,
+        EventRequestFlags::FALLING_EDGE,
+        format!("module {slot} interrupt").as_str(),
+    )
+    .map_err(|_| eprintln!("Could not get slot {slot} interrupt line handle"))
+    .ok()
 }
 
 /// get the current modules in the controller
