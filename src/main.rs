@@ -1,11 +1,9 @@
 use std::{
     env,
     fmt::{Display, Write},
-    fs,
-    fs::File,
+    fs::{self, File},
     mem,
     process::{exit, Command},
-    thread,
     time::Duration,
 };
 
@@ -15,7 +13,7 @@ use inquire::Select;
 
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 
-use tokio::{task::JoinSet, time::timeout};
+use tokio::{task, task::JoinSet, time, time::timeout};
 use tokio_gpiod::{Chip, EdgeDetect, Input, Lines, Options};
 
 const DUMMY_MESSAGE: [u8; 5] = [0; 5];
@@ -110,6 +108,7 @@ enum CommandArg {
     Overwrite,
 }
 
+//impl display to make sure we don't have capital letters, as the don't match the commands
 impl Display for CommandArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -381,11 +380,11 @@ impl Module {
             qr_front: 0,
             qr_back: 0,
         };
-        module.get_module_info()
+        module.get_module_info().await
     }
 
     /// get information from the module like firmware, manufacture, qr codes
-    fn get_module_info(mut self) -> Option<Self> {
+    async fn get_module_info(mut self) -> Option<Self> {
         let mut tx_buf = [0u8; BOOTMESSAGE_LENGTH + 1];
         let mut rx_buf = [0u8; BOOTMESSAGE_LENGTH + 1];
 
@@ -400,11 +399,11 @@ impl Module {
         self.reset_module(true);
 
         //give module time to reset
-        thread::sleep(Duration::from_millis(200));
+        time::sleep(Duration::from_millis(200)).await;
 
         self.reset_module(false);
 
-        thread::sleep(Duration::from_millis(200));
+        time::sleep(Duration::from_millis(200)).await;
 
         tx_buf[0] = 9;
         tx_buf[1] = (BOOTMESSAGE_LENGTH - 1) as u8;
@@ -531,14 +530,6 @@ impl Module {
 
         //upload
         let lines: Vec<&str> = firmware_content_string.split('\n').collect();
-        let mut line_number: usize = 0;
-        #[allow(unused_assignments)]
-        let mut send_buffer_pointer: usize = 0;
-        #[allow(unused_assignments)]
-        let mut message_pointer: usize = 0;
-        let mut message_type: u8 = 0;
-        let mut firmware_line_check: usize = usize::MAX; //set line check to usize::MAX for the first message so we know its the first message
-        let mut firmware_error_counter: u8 = 0;
 
         if lines.len() <= 1 {
             eprintln!("Error: firmware file corrupt");
@@ -552,11 +543,13 @@ impl Module {
         tx_buf[6] = sw[0];
         tx_buf[7] = sw[1];
         tx_buf[8] = sw[2];
+        tx_buf[BOOTMESSAGE_LENGTH - 1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
+
         //this is super scuffed but for some reason it queues up events, so when in earlier parts the interrupt happens it fills the queue, causing it to skip the memory wipe interrupt and fail
         while let Ok(Ok(_)) = timeout(Duration::from_millis(1), self.interrupt.read_event()).await {
             ()
         }
-        tx_buf[BOOTMESSAGE_LENGTH - 1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
+        //register the interrupt waiter
         let interrupt = self.interrupt.read_event();
         match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
             Ok(()) => (),
@@ -569,7 +562,8 @@ impl Module {
         let spinner = multi_progress.add(ProgressBar::new_spinner());
         spinner.set_message(format!("Wiping old firmware on slot {}", self.slot));
         spinner.enable_steady_tick(Duration::from_millis(100));
-        _ = timeout(Duration::from_millis(2500), interrupt).await;
+        //wait for interrupt to happen or 2.5 secondes to pass, wiping the memory takes some time.
+        _ = timeout(Duration::from_millis(3500), interrupt).await;
         spinner.finish_and_clear();
 
         let progress = multi_progress.add(ProgressBar::new(lines.len() as u64));
@@ -580,13 +574,22 @@ impl Module {
             self.slot
         ));
 
+        let mut line_number: usize = 0;
+        #[allow(unused_assignments)]
+        let mut send_buffer_pointer: usize = 0;
+        #[allow(unused_assignments)]
+        let mut message_pointer: usize = 0;
+        let mut message_type: u8 = 0;
+        let mut firmware_line_check: usize = usize::MAX; //set line check to usize::MAX for the first message so we know its the first message
+        let mut firmware_error_counter: u8 = 0;
+
         while message_type != 7 {
             // 7 marks the last line of the .srec file
             message_type = u8::from_str_radix(lines[line_number].get(1..2).unwrap(), 16).unwrap();
 
             let line_length =
                 u8::from_str_radix(lines[line_number].get(2..4).unwrap(), 16).unwrap();
-
+            progress.set_message(format!("current error number: {}", firmware_error_counter));
             //first time the last line is reached, it is not allowed to send the last line, as it could cause the module to jump to the firmware, potentially leaving line n-1 with an error
             if message_type == 7 && firmware_line_check != line_number {
                 //prepare dummy message to get feedback from the previous message
@@ -669,18 +672,18 @@ impl Module {
                     // the first message will always receive junk, ignore this junk and continue to line 1
                     if firmware_line_check == usize::MAX {
                         line_number += 1;
-                        firmware_line_check = 0;
+                        firmware_line_check = 0; // no ; to exit the match statement
+                        _ = timeout(Duration::from_millis(1), interrupt).await;
                         continue;
                     }
+                    let received_line =
+                        u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap()));
+                    let local_checksum_match = rx_buf[BOOTMESSAGE_LENGTH - 1]
+                        == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH - 1);
+                    let remote_checksum_match = rx_buf[8] == 1;
+                    let received_line_match = received_line as usize == firmware_line_check;
 
-                    if rx_buf[BOOTMESSAGE_LENGTH - 1]
-                        == calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH - 1)
-                        && firmware_line_check
-                            == u16::from_be_bytes(clone_into_array(rx_buf.get(6..8).unwrap()))
-                                as usize
-                        && rx_buf[8] == 1
-                    {
-                        // checksum correct?
+                    if local_checksum_match && received_line_match && remote_checksum_match {
                         if firmware_error_counter & 0b1 > 0 {
                             // if the error counter is uneven swap line number and the line being checked
                             std::mem::swap(&mut line_number, &mut firmware_line_check);
@@ -696,7 +699,7 @@ impl Module {
                             tx_buf_escape[2] = 49;
                             tx_buf_escape[BOOTMESSAGE_LENGTH - 1] =
                                 calculate_checksum(&tx_buf_escape, BOOTMESSAGE_LENGTH - 1);
-                            thread::sleep(Duration::from_millis(5));
+                            time::sleep(Duration::from_millis(5)).await;
                             _ = self.spidev.transfer(&mut SpidevTransfer::read_write(
                                 &tx_buf_escape,
                                 &mut rx_buf_escape,
@@ -712,7 +715,7 @@ impl Module {
                                 message_type = 0;
                             }
                         } else {
-                            // normal firmware message
+                            // normal firmware message succes
                             line_number += 1;
                             firmware_error_counter = 0;
                             progress.inc(1);
@@ -722,29 +725,57 @@ impl Module {
                         message_type = 0;
                         firmware_error_counter += 1;
 
+                        if !local_checksum_match {
+                            progress.println(format!(
+                                "Error slot {}: checksum from module: {} didn't match with the calculated one: {}",
+                                self.slot, rx_buf[BOOTMESSAGE_LENGTH-1], calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1)
+                            ));
+                        }
+                        if !received_line_match {
+                            // use line number as it has been mem::swapped just before with firmware line check, which is the on we want
+                            progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
+                        }
+                        if !remote_checksum_match {
+                            progress.println(format!(
+                                "Error slot {}: module did not receive the firmware line correctly",
+                                self.slot
+                            ));
+                        }
                         if firmware_error_counter > 10 {
-                            eprintln!("Error: upload Failed");
-                            progress.finish_and_clear();
+                            if !local_checksum_match {
+                                progress.abandon_with_message(
+                                    "Error: upload failed, checksum didn't match",
+                                );
+                            } else if !received_line_match {
+                                progress.abandon_with_message("Error: upload failed, firmware line didn't match with the reply from the module");
+                            } else if !remote_checksum_match {
+                                progress.abandon_with_message("Error: upload failed, module did not receive the firmware line correctly");
+                            } else {
+                                progress
+                                    .abandon_with_message("Error: upload failed, no idea how\n");
+                            }
                             return Err(UploadError::FirmwareCorrupted(self.slot));
                         }
                     }
-                    _ = timeout(Duration::from_millis(1), interrupt).await;
                 }
                 Err(_) => {
                     mem::swap(&mut line_number, &mut firmware_line_check);
                     message_type = 0;
                     firmware_error_counter += 1;
-
+                    progress.println(format!(
+                        "Error slot {}: failed to transfer spi message",
+                        self.slot
+                    ));
                     if firmware_error_counter > 10 {
-                        eprintln!("Error: upload Failed, spi transfer failed");
-                        progress.finish_and_clear();
+                        progress.abandon_with_message("Error: upload failed, spi transfer failed");
                         return Err(UploadError::FirmwareCorrupted(self.slot));
                     }
-                    _ = timeout(Duration::from_millis(1), interrupt).await;
                 }
-            }
-        }
-        progress.finish_and_clear();
+            } //exit match
+              //wait for interrupt to happen (or 1 millisecond to pass), then continue with the next line
+            _ = timeout(Duration::from_millis(1), interrupt).await;
+        } //exit while
+        progress.finish_with_message("Upload successfull!");
         self.cancel_firmware_upload(&mut tx_buf);
         Ok(())
     }
@@ -1143,7 +1174,13 @@ async fn main() {
     } else if hardware_string.contains("Moduline Screen") {
         ControllerTypes::ModulineDisplay
     } else {
-        err_n_die(format!("{} is not a supported GOcontroll Moduline product. Can't proceed", hardware_string).as_str());
+        err_n_die(
+            format!(
+                "{} is not a supported GOcontroll Moduline product. Can't proceed",
+                hardware_string
+            )
+            .as_str(),
+        );
     };
 
     //stop services potentially trying to use the module
@@ -1188,7 +1225,7 @@ async fn main() {
     }
 
     //start getting module information in a seperate task while other init is happening
-	let modules_fut = tokio::task::spawn(get_modules_and_save(controller));
+    let modules_fut = task::spawn(get_modules_and_save(controller));
 
     //get all the firmwares
     let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/")
@@ -1202,7 +1239,7 @@ async fn main() {
 
     //create the base for the progress bar(s)
     let multi_progress = MultiProgress::new();
-    let style = ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} ({eta})")
+    let style = ProgressStyle::with_template("{bar:40.cyan/blue} {pos:>7}/{len:7} ({eta}) {msg}")
         .unwrap()
         .progress_chars("##-")
         .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
@@ -1230,9 +1267,9 @@ async fn main() {
 
     //get the modules from the previously started task
     let modules = modules_fut.await.unwrap_or_else(|_| {
-		eprintln!("Could not get module information");
-		err_n_restart_services(nodered, simulink);
-	});	
+        eprintln!("Could not get module information");
+        err_n_restart_services(nodered, simulink);
+    });
 
     match command {
         CommandArg::Scan => {
@@ -1266,29 +1303,24 @@ async fn main() {
                     }
                     _ => {
                         if let Ok(slot) = arg.parse::<u8>() {
-                            if slot < controller as u8 || slot >= 1 {
-                                let module = modules
-                                    .into_iter()
-                                    .find(|module| module.slot == slot)
-                                    .take()
-                                    .unwrap_or_else(|| {
-                                        eprintln!("Couldn't find a module in slot {}", slot);
-                                        err_n_restart_services(nodered, simulink);
-                                    });
-                                update_one_module(
-                                    module,
-                                    &available_firmwares,
-                                    multi_progress,
-                                    style,
-                                    controller,
-                                    nodered,
-                                    simulink,
-                                )
-                                .await;
-                            } else {
-                                eprintln!("{}", USAGE);
-                                err_n_restart_services(nodered, simulink);
-                            }
+                            let module = modules
+                                .into_iter()
+                                .find(|module| module.slot == slot)
+                                .take()
+                                .unwrap_or_else(|| {
+                                    eprintln!("Couldn't find a module in slot {}", slot);
+                                    err_n_restart_services(nodered, simulink);
+                                });
+                            update_one_module(
+                                module,
+                                &available_firmwares,
+                                multi_progress,
+                                style,
+                                controller,
+                                nodered,
+                                simulink,
+                            )
+                            .await;
                         } else {
                             eprintln!("{}", USAGE);
                             err_n_restart_services(nodered, simulink);
