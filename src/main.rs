@@ -19,6 +19,8 @@ use tokio::{task, task::JoinSet, time, time::timeout};
 
 use gpio_cdev::{AsyncLineEventHandle, Chip, EventRequestFlags, LineRequestFlags};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const DUMMY_MESSAGE: [u8; 5] = [0; 5];
 
 const BOOTMESSAGE_LENGTH: usize = 46;
@@ -527,7 +529,7 @@ impl Module {
         progress.set_style(style);
         progress.set_message(format!(
             "Uploading firmware {} to slot {}",
-            self.firmware.as_string(),
+            new_firmware.as_string(),
             self.slot
         ));
 
@@ -546,7 +548,6 @@ impl Module {
 
             let line_length =
                 u8::from_str_radix(lines[line_number].get(2..4).unwrap(), 16).unwrap();
-            progress.set_message(format!("current error number: {}", firmware_error_counter));
             //first time the last line is reached, it is not allowed to send the last line, as it could cause the module to jump to the firmware, potentially leaving line n-1 with an error
             if message_type == 7 && firmware_line_check != line_number {
                 //prepare dummy message to get feedback from the previous message
@@ -630,7 +631,7 @@ impl Module {
                     if firmware_line_check == usize::MAX {
                         line_number += 1;
                         firmware_line_check = 0; // no ; to exit the match statement
-                        _ = timeout(Duration::from_millis(1), interrupt).await;
+                        _ = timeout(Duration::from_micros(1000), interrupt).await;
                         continue;
                     }
                     let received_line =
@@ -681,25 +682,29 @@ impl Module {
                         mem::swap(&mut line_number, &mut firmware_line_check);
                         message_type = 0;
                         firmware_error_counter += 1;
+
                         #[cfg(debug_assertions)]
-                        if !local_checksum_match {
-                            progress.println(format!(
-                                "Error slot {}: checksum from module: {} didn't match with the calculated one: {}",
-                                self.slot, rx_buf[BOOTMESSAGE_LENGTH-1], calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1)
-                            ));
-                        }
-                        #[cfg(debug_assertions)]
-                        if !received_line_match {
-                            // use line number as it has been mem::swapped just before with firmware line check, which is the on we want
-                            progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
-                        }
-                        #[cfg(debug_assertions)]
-                        if !remote_checksum_match {
-                            progress.println(format!(
-                                "Error slot {}: module did not receive the firmware line correctly",
-                                self.slot
-                            ));
-                        }
+                        {
+							progress.println(format!("error number {}, rx: {:?}",firmware_error_counter,rx_buf));
+							if !local_checksum_match {
+								progress.println(format!(
+									"Error slot {}: checksum from module: {} didn't match with the calculated one: {}",
+									self.slot, rx_buf[BOOTMESSAGE_LENGTH-1], calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1)
+								));
+							}
+
+							if !received_line_match {
+								// use line number as it has been mem::swapped just before with firmware line check, which is the on we want
+								progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
+							}
+
+							if !remote_checksum_match {
+								progress.println(format!(
+									"Error slot {}: module did not receive the firmware line correctly",
+									self.slot
+								));
+							}
+						}
                         if firmware_error_counter > 10 {
                             if !local_checksum_match {
                                 progress.abandon_with_message(
@@ -732,7 +737,7 @@ impl Module {
                 }
             } //exit match
               //wait for interrupt to happen (or 1 millisecond to pass), then continue with the next line
-            _ = timeout(Duration::from_millis(1), interrupt).await;
+            _ = timeout(Duration::from_micros(1000), interrupt).await;
         } //exit while
         progress.finish_with_message("Upload successfull!");
         self.cancel_firmware_upload(&mut tx_buf);
@@ -1139,6 +1144,9 @@ async fn update_all_modules(
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 async fn main() {
+	println!("GOcontroll module management utility V{}",VERSION);
+	#[cfg(debug_assertions)]
+	println!("Debug version");
     //get the controller hardware
     let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").unwrap_or_else(|_|{
 		err_n_die("Could not find a hardware description file, this feature is not supported by your hardware.");
