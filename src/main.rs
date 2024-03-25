@@ -1156,7 +1156,7 @@ async fn main() {
         ControllerTypes::ModulineIV
     } else if hardware_string.contains("Moduline Mini") {
         ControllerTypes::ModulineMini
-    } else if hardware_string.contains("Moduline Screen") {
+    } else if hardware_string.contains("Moduline Display") {
         ControllerTypes::ModulineDisplay
     } else {
         err_n_die(
