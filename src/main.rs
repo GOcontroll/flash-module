@@ -406,6 +406,55 @@ impl Module {
         }
     }
 
+	async fn wipe_module_error(
+		&mut self
+	) {
+		let mut tx_buf = [0u8; BOOTMESSAGE_LENGTH + 1];
+		match self
+            .spidev
+            .transfer(&mut SpidevTransfer::write(&DUMMY_MESSAGE))
+        {
+            Ok(()) => (),
+            Err(_) => return,
+        }
+
+        self.reset_module(true);
+
+        //give module time to reset
+        time::sleep(Duration::from_millis(200)).await;
+
+        self.reset_module(false);
+
+        time::sleep(Duration::from_millis(200)).await;
+
+        //wipe the old firmware and set the new software version no err_n_restart_services from this point on, errors lead to corrupt firmware.
+        tx_buf[0] = 29;
+        tx_buf[1] = (BOOTMESSAGE_LENGTH - 1) as u8;
+        tx_buf[2] = 29;
+        tx_buf[6] = 255;
+        tx_buf[7] = 255;
+        tx_buf[8] = 255;
+        tx_buf[BOOTMESSAGE_LENGTH - 1] = calculate_checksum(&tx_buf, BOOTMESSAGE_LENGTH - 1);
+
+        //this is super scuffed but for some reason it queues up events, so when in earlier parts the interrupt happens it fills the queue, causing it to skip the memory wipe interrupt and fail
+        while let Ok(_) = timeout(Duration::from_millis(1), self.interrupt.next()).await {
+            ()
+        }
+
+        //register the interrupt waiter
+        let interrupt = self.interrupt.next();
+        match self.spidev.transfer(&mut SpidevTransfer::write(&tx_buf)) {
+            Ok(()) => (),
+            Err(err) => {
+                eprintln!("Error: failed spi transfer {}", err);
+                return;
+            }
+        }
+
+        _ = timeout(Duration::from_millis(3500), interrupt).await;
+
+	}
+
     /// Overwrite the firmware on a module \
     ///
     /// Firmware uploading mechanism \
@@ -780,7 +829,13 @@ impl Module {
                     self.firmware = *firmwares.get(index).unwrap();
                     Ok(Ok(self)) //firmware updated successfully
                 }
-                Err(err) => Err(err), //error uploading the new firmware
+                Err(err) =>  {
+					if let UploadError::FirmwareCorrupted(slot) = err {
+						eprintln!("firmware upload critically failed on slot {}, wiping firmware...", slot);
+						self.wipe_module_error().await;
+					}
+					Err(err)
+				}, //error uploading the new firmware
             }
         } else {
             // no new firmware found to update the module with.
@@ -1432,6 +1487,8 @@ async fn main() {
                 }
                 Err(err) => match err {
                     UploadError::FirmwareCorrupted(slot) => {
+						eprintln!("firmware upload critically failed on slot {}, wiping firmware...", slot);
+						module.wipe_module_error().await;
                         err_n_die(
                             format!("Update failed, firmware is corrupted on slot {}", slot)
                                 .as_str(),
