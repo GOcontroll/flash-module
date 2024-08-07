@@ -7,6 +7,8 @@ repository = "https://github.com/GOcontroll/go-modules"
 readme = "README.md"
 homepage = "https://gocontroll.com"
 publish = false
+authors = ["Maud Spierings"]
+description = "A tool to flash the modules in the GOcontroll Moduline controllers"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -29,3 +31,6 @@ ctrlc = "3.4"
 tokio = { version = "1.33.0", features = ["rt", "macros", "time", "rt-multi-thread"]}
 gpio-cdev = { version = "0.6", features = ["async-tokio"]}
 futures = "0.3"
+
+[package.metadata.deb]
+depends = ["libc-bin"]

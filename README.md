@@ -13,3 +13,13 @@ and then
 upx --best --lzma target/aarch64-unknown-linux-gnu/release/go-modules
 ```
 to compress it for optimal size, the debug builds take quite a while to compress
+
+package it as .deb:
+```
+cargo deb --no-build --target aarch64-unknown-linux-gnu --no-strip
+```
+
+sign the package:
+```
+dpkg-sig --sign builder target/aarch64-unknown-linux-gnu/debian/go-modules_*_arm64.deb
+```
