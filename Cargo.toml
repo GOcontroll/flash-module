@@ -16,7 +16,7 @@ description = "A tool to flash the modules in the GOcontroll Moduline controller
 unsafe_code = "forbid"
 
 [profile.release]
-strip = true
+#strip = true
 opt-level = "s"
 lto = true
 codegen-units = 1
