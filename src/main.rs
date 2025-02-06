@@ -406,11 +406,9 @@ impl Module {
         }
     }
 
-	async fn wipe_module_error(
-		&mut self
-	) {
-		let mut tx_buf = [0u8; BOOTMESSAGE_LENGTH + 1];
-		match self
+    async fn wipe_module_error(&mut self) {
+        let mut tx_buf = [0u8; BOOTMESSAGE_LENGTH + 1];
+        match self
             .spidev
             .transfer(&mut SpidevTransfer::write(&DUMMY_MESSAGE))
         {
@@ -452,8 +450,7 @@ impl Module {
         }
 
         _ = timeout(Duration::from_millis(3500), interrupt).await;
-
-	}
+    }
 
     /// Overwrite the firmware on a module \
     ///
@@ -521,7 +518,7 @@ impl Module {
 
         //open and read the firmware file
         let firmware_content_string = match fs::read_to_string(format!(
-            "/usr/module-firmware/{}",
+            "/lib/firmware/gocontroll/{}",
             new_firmware.as_filename()
         )) {
             Ok(file) => file,
@@ -734,26 +731,29 @@ impl Module {
 
                         #[cfg(debug_assertions)]
                         {
-							progress.println(format!("error number {}, rx: {:?}",firmware_error_counter,rx_buf));
-							if !local_checksum_match {
-								progress.println(format!(
+                            progress.println(format!(
+                                "error number {}, rx: {:?}",
+                                firmware_error_counter, rx_buf
+                            ));
+                            if !local_checksum_match {
+                                progress.println(format!(
 									"Error slot {}: checksum from module: {} didn't match with the calculated one: {}",
 									self.slot, rx_buf[BOOTMESSAGE_LENGTH-1], calculate_checksum(&rx_buf, BOOTMESSAGE_LENGTH-1)
 								));
-							}
+                            }
 
-							if !received_line_match {
-								// use line number as it has been mem::swapped just before with firmware line check, which is the on we want
-								progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
-							}
+                            if !received_line_match {
+                                // use line number as it has been mem::swapped just before with firmware line check, which is the on we want
+                                progress.println(format!("Error slot {}: firmware line: {} didn't match with the reply from the module: {}",self.slot, line_number, received_line));
+                            }
 
-							if !remote_checksum_match {
-								progress.println(format!(
+                            if !remote_checksum_match {
+                                progress.println(format!(
 									"Error slot {}: module did not receive the firmware line correctly",
 									self.slot
 								));
-							}
-						}
+                            }
+                        }
                         if firmware_error_counter > 10 {
                             if !local_checksum_match {
                                 progress.abandon_with_message(
@@ -829,13 +829,16 @@ impl Module {
                     self.firmware = *firmwares.get(index).unwrap();
                     Ok(Ok(self)) //firmware updated successfully
                 }
-                Err(err) =>  {
-					if let UploadError::FirmwareCorrupted(slot) = err {
-						eprintln!("firmware upload critically failed on slot {}, wiping firmware...", slot);
-						self.wipe_module_error().await;
-					}
-					Err(err)
-				}, //error uploading the new firmware
+                Err(err) => {
+                    if let UploadError::FirmwareCorrupted(slot) = err {
+                        eprintln!(
+                            "firmware upload critically failed on slot {}, wiping firmware...",
+                            slot
+                        );
+                        self.wipe_module_error().await;
+                    }
+                    Err(err)
+                } //error uploading the new firmware
             }
         } else {
             // no new firmware found to update the module with.
@@ -987,7 +990,7 @@ fn get_interrupt(chip: &str, line: u32, slot: u8) -> Option<AsyncLineEventHandle
         EventRequestFlags::FALLING_EDGE,
         format!("module {slot} interrupt").as_str(),
     )
-    .map_err(|_| eprintln!("Could not get slot {slot} interrupt line handle"))
+    .map_err(|err| eprintln!("Could not get slot {slot} interrupt line handle: {err}"))
     .ok()
 }
 
@@ -1022,17 +1025,23 @@ async fn get_modules_and_save(controller: ControllerTypes) -> Vec<Module> {
     save_modules(modules_out, &controller)
 }
 
-/// save all the modules to modules to /usr/module-firmware/modules.txt, None elements will be removed from the file
+/// save all the modules to modules to /usr/lib/gocontroll/modules, None elements will be removed from the file
 fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> Vec<Module> {
     let modules_string =
-        if let Ok(contents) = std::fs::read_to_string("/usr/module-firmware/modules.txt") {
+        if let Ok(contents) = std::fs::read_to_string("/usr/lib/gocontroll/modules") {
             if contents.split('\n').count() == 4 {
                 // for some reason the file from older systems is messed up sometimes
                 contents
             } else {
+                if std::fs::create_dir_all("/usr/lib/gocontroll/").is_err() {
+                    eprintln!("Could not create /usr/lib/gocontroll/");
+                }
                 controller.get_empty_modules_file()
             }
         } else {
+            if std::fs::create_dir_all("/usr/lib/gocontroll/").is_err() {
+                eprintln!("Could not create /usr/lib/gocontroll/");
+            }
             //if the file doesn't exist, generate a new template
             controller.get_empty_modules_file()
         };
@@ -1085,7 +1094,9 @@ fn save_modules(modules: Vec<Option<Module>>, controller: &ControllerTypes) -> V
     lines[2] = front_qrs.join(":");
     lines[3] = rear_qrs.join(":");
 
-    _ = std::fs::write("/usr/module-firmware/modules.txt", lines.join("\n"));
+    if std::fs::write("/usr/lib/gocontroll/modules", lines.join("\n")).is_err() {
+        eprintln!("Could not save new layout to /usr/lib/gocontroll/modules")
+    }
     modules.into_iter().flatten().collect()
 }
 
@@ -1199,9 +1210,9 @@ async fn update_all_modules(
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 3)]
 async fn main() {
-	println!("GOcontroll module management utility V{}",VERSION);
-	#[cfg(debug_assertions)]
-	println!("Debug version");
+    println!("GOcontroll module management utility V{}", VERSION);
+    #[cfg(debug_assertions)]
+    println!("Debug version");
     //get the controller hardware
     let hardware_string= fs::read_to_string("/sys/firmware/devicetree/base/hardware").unwrap_or_else(|_|{
 		err_n_die("Could not find a hardware description file, this feature is not supported by your hardware.");
@@ -1268,13 +1279,15 @@ async fn main() {
     let modules_fut = task::spawn(get_modules_and_save(controller));
 
     //get all the firmwares
-    let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/usr/module-firmware/")
+    let available_firmwares: Vec<FirmwareVersion> = fs::read_dir("/lib/firmware/gocontroll/")
         .unwrap_or_else(|_| {
+            eprintln!("Could not find the firmware folder");
             err_n_restart_services(nodered, simulink);
-        }) // get the files in module-firmware
+        }) // get the gocontroll firmware files
         .map(|file| file.unwrap().file_name().to_str().unwrap().to_string()) //turn them into strings
         .filter(|file_name| file_name.ends_with(".srec")) //keep only the srec files
-        .map(|firmware| FirmwareVersion::from_filename(firmware).unwrap()) //turn them into FirmwareVersion Structs
+        .map(|firmware| FirmwareVersion::from_filename(firmware)) //turn them into FirmwareVersion Structs
+        .flatten()
         .collect(); //collect them into a vector
 
     //create the base for the progress bar(s)
@@ -1449,7 +1462,7 @@ async fn main() {
                     if available_firmwares.contains(&firmware) {
                         firmware
                     } else {
-                        eprintln!("/usr/module-firmware/{} does not exist", arg);
+                        eprintln!("/lib/firmware/gocontroll/{} does not exist", arg);
                         err_n_restart_services(nodered, simulink);
                     }
                 } else {
@@ -1487,8 +1500,11 @@ async fn main() {
                 }
                 Err(err) => match err {
                     UploadError::FirmwareCorrupted(slot) => {
-						eprintln!("firmware upload critically failed on slot {}, wiping firmware...", slot);
-						module.wipe_module_error().await;
+                        eprintln!(
+                            "firmware upload critically failed on slot {}, wiping firmware...",
+                            slot
+                        );
+                        module.wipe_module_error().await;
                         err_n_die(
                             format!("Update failed, firmware is corrupted on slot {}", slot)
                                 .as_str(),

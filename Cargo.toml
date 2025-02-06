@@ -1,6 +1,6 @@
 [package]
 name = "go-modules"
-version = "1.1.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/GOcontroll/go-modules"
@@ -25,12 +25,15 @@ codegen-units = 1
 
 [dependencies]
 spidev = "0.6"
-inquire = "0.7"
-indicatif = "0.17"
-ctrlc = "3.4"
-tokio = { version = "1.33.0", features = ["rt", "macros", "time", "rt-multi-thread"]}
+inquire = "0.7.5"
+indicatif = "0.17.9"
+ctrlc = "3.4.5"
+tokio = { version = "1.43.0", features = ["rt", "macros", "time", "rt-multi-thread"]}
 gpio-cdev = { version = "0.6", features = ["async-tokio"]}
-futures = "0.3"
+futures = "0.3.31"
 
 [package.metadata.deb]
 depends = ["libc-bin"]
+section = "misc"
+priority = "optional"
+copyright = "GOcontroll 2024"
